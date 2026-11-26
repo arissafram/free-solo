@@ -9,9 +9,12 @@ const MIN_HEIGHT = 360;
 const SWIPE_PX = 24;           // finger travel that counts as a swipe
 
 // ---- Gameplay tuning: every gameplay number lives here ----
-// Ranged knobs are [start, hardest]. Difficulty d goes 0 -> 1 over RAMP_MS of
-// climbing (from the first move), then stays at 1.
+// Ranged knobs are [start, at RAMP_MS, limit]. Difficulty d goes 0 -> 1 over RAMP_MS
+// of climbing (from the first move), then keeps rising AFTER_RAMP times as fast, with
+// no end; each knob stops at its limit so the game never turns impossible.
+// Two-value knobs ([start, at RAMP_MS]) just stop at RAMP_MS.
 const RAMP_MS = 90000;
+const AFTER_RAMP = 0.35;
 
 // Wall
 const COLS = 9;                // hold columns: the wall is wider than a phone, capped on desktop
@@ -23,13 +26,10 @@ const ROWS_AHEAD = 4;          // build holds this many rows above the top of th
 const CAM_DEADZONE = 0.2;      // camera slides sideways once the climber is this far off screen centre (fraction of width)
 const JITTER_X = 12;           // px holds are nudged off the grid sideways...
 const JITTER_Y = 18;           // ...and up/down, so reach distances vary
-const EXTRA_HOLDS = [0.6, 0.25];// chance of a hold in each non-route column (rest are gaps)
+const EXTRA_HOLDS = [0.35, 0.15];// chance of a hold in each non-route column (rest are gaps)
 
 // Climber + camera
-const MOVE_MS = 110;           // base reach time...
-const MOVE_MS_PER_PX = 0.6;    // ...plus this per px of reach...
-const LONG_REACH_PX = 90;      // ...and reaches longer than this...
-const LONG_REACH_MS_PER_PX = 4;// ...cost this much extra per px beyond it
+const MOVE_MS = 120;           // every reach takes this long, however far
 const MAX_SPAN = 150;          // px: hands share a hold or sit on holds at most this far apart
 const DIR_CONE = 1.3;          // a hold is "in that direction" if its sideways offset <= this x forward distance
 const MIN_STEP = 8;            // px: a target must be at least this far in the swipe direction
@@ -39,11 +39,11 @@ const FALL_GRAVITY = 1800;     // px/s² when knocked off
 
 // Falling rocks
 const GRACE_MS = 2000;         // no rocks for this long after the first move
-const SPAWN_MS = [2000, 700];  // time between "!" warnings
-const WARN_MS = [1100, 550];   // "!" shows this long before the rock drops
-const ROCK_SPEED = [300, 600]; // px/s fall speed
+const SPAWN_MS = [2000, 700, 350];  // time between "!" warnings
+const WARN_MS = [1100, 550, 400];   // "!" shows this long before the rock drops
+const ROCK_SPEED = [300, 600, 900]; // px/s fall speed
 const ROCK_CELL = [2, 4];      // rock pixel size (rock is 8x8 cells: 16px to 32px)
-const AIM_CHANCE = [0.3, 0.7]; // chance a rock targets the climber's column (else random)
+const AIM_CHANCE = [0.3, 0.7, 0.85]; // chance a rock targets the climber's column (else random)
 
 // Juice
 const SHAKE_MS = 300;          // screen shake when a rock hits...
@@ -53,7 +53,11 @@ const VOLUME = 0.15;           // master volume for the chiptune sound effects
 const GRAY = 0x535353;
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
-const lerp = (range, d) => range[0] + (range[1] - range[0]) * d;
+const lerp = (range, d) => {
+  if (range.length < 3) return range[0] + (range[1] - range[0]) * Math.min(d, 1);
+  const v = range[0] + (range[1] - range[0]) * d;
+  return range[1] < range[0] ? Math.max(v, range[2]) : Math.min(v, range[2]);
+};
 const snap = (v) => Math.round(v / CELL) * CELL;
 
 // The board fills the window
@@ -135,13 +139,15 @@ function blip(notes, type = 'square', vol = 1) {
 }
 const SFX = {
   grab: () => blip([[880, 660, 0, 0.05]], 'square', 0.6),
-  longReach: () => blip([[220, 520, 0, 0.22]], 'triangle', 1.2),
   warn: () => blip([[1320, 1320, 0, 0.05], [1320, 1320, 0.1, 0.05]], 'square', 0.5),
   hit: () => blip([[400, 60, 0, 0.35], [180, 40, 0, 0.3]], 'sawtooth', 1)
 };
 
 const WALL_W = COLS * COL_W;
-const difficulty = () => Phaser.Math.Clamp(elapsed / RAMP_MS, 0, 1);
+const difficulty = () => {
+  const t = elapsed / RAMP_MS;
+  return t <= 1 ? t : 1 + (t - 1) * AFTER_RAMP;
+};
 const colX = (col) => (col + 0.5) * COL_W;
 const colOf = (x) => Phaser.Math.Clamp(Math.floor(x / COL_W), 0, COLS - 1);
 const rowY = (r) => ROW0_Y - r * ROW_GAP;
@@ -247,16 +253,14 @@ function tryMove(dir) {
   if (!next) return;
   const h = hands[k];
   const to = holdXY(next.r, next.i);
-  const dist = Phaser.Math.Distance.Between(h.x, h.y, to.x, to.y);
   moving = true;
   lastMoved = k;
-  if (dist > LONG_REACH_PX) SFX.longReach();
   h.r = next.r; h.i = next.i;
   scene.tweens.add({
     targets: h,
     x: to.x,
     y: to.y,
-    duration: MOVE_MS + dist * MOVE_MS_PER_PX + Math.max(0, dist - LONG_REACH_PX) * LONG_REACH_MS_PER_PX,
+    duration: MOVE_MS,
     ease: 'Sine.easeInOut',
     onComplete: () => {
       moving = false;
