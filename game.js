@@ -1,4 +1,5 @@
-// Free Solo — gray box. Boxes for holds, climber and rocks.
+// Free Solo — climb each wall to the flag with both hands. Rocks fall; one hit and
+// you fall to the ground, get buried, game over. Sprites live in sprites.js.
 // World y grows downward; the ground is y = 0 and the wall goes up into negative y.
 
 // ---- Board size (not gameplay) ----
@@ -9,20 +10,20 @@ const PAGE_PADDING = 32;       // 16px above + 16px below the board
 const SWIPE_PX = 24;           // finger travel that counts as a swipe
 
 // ---- Gameplay tuning: every gameplay number lives here ----
-// Ranged knobs are [easy, hard]. Difficulty d goes 0 -> 1: it stays 0 for EASY_SECONDS
-// after the first move, then rises linearly over RAMP_SECONDS and holds at 1.
-const EASY_SECONDS = 20;       // calm opening: slow, rare, well-warned rocks
-const RAMP_SECONDS = 120;      // time from easy to full difficulty after that
+// Ranged knobs are [level 1, hardest level]. Difficulty d goes 0 -> 1 from level 1
+// to level LEVELS_TO_HARDEST, then stays at 1.
+const LEVELS_TO_HARDEST = 8;
+const LEVEL_ROWS = 10;         // rows of holds to the flag on level 1...
+const LEVEL_ROWS_PER_LEVEL = 3;// ...plus this many per level after
+const CLEAR_MS = 1400;         // pause on "LEVEL CLEAR" before the next wall
 
 // Wall
 const COLS = 5;                // hold columns
-const ROW_GAP = 70;            // px between hold rows (one move up = one row)
-const ROW0_Y = -60;            // lowest hold row (start hold)
-const PX_PER_M = 35;           // score: 2 m per row
+const ROW_GAP = 70;            // px between hold rows
+const ROW0_Y = -92;            // lowest hold row (start hold)
 const JITTER_X = 22;           // px holds are nudged off the grid sideways...
 const JITTER_Y = 18;           // ...and up/down, so reach distances vary
-const EXTRA_HOLDS = [0.6, 0.2];// chance of a hold in each non-route column (rest are gaps)
-const HOLD_RAMP_ROWS = 80;     // rows over which EXTRA_HOLDS goes easy -> hard (by height)
+const EXTRA_HOLDS = [0.6, 0.25];// chance of a hold in each non-route column (rest are gaps)
 
 // Climber + camera
 const MOVE_MS = 110;           // base reach time...
@@ -32,28 +33,23 @@ const LONG_REACH_MS_PER_PX = 4;// ...cost this much extra per px beyond it
 const MAX_SPAN = 150;          // px: hands share a hold or sit on holds at most this far apart
 const DIR_CONE = 1.3;          // a hold is "in that direction" if its sideways offset <= this x forward distance
 const MIN_STEP = 8;            // px: a target must be at least this far in the swipe direction
+const SHOULDER_DROP = 42;      // px from the hands' midpoint down to the shoulders
 const CLIMBER_FOCUS = 0.62;    // climber's hands sit this far down the screen
+const FALL_GRAVITY = 1800;     // px/s² when knocked off
 
 // Falling rocks
-const GRACE_MS = 2500;         // no rocks at all for this long after the first move
-const SPAWN_MS = [2200, 650];  // time between "!" warnings
+const GRACE_MS = 2000;         // no rocks for this long after the first move of a level
+const SPAWN_MS = [2000, 700];  // time between "!" warnings
 const WARN_MS = [1100, 550];   // "!" shows this long before the rock drops
-const ROCK_SPEED = [300, 620]; // px/s fall speed
-const ROCK_MIN = [16, 20];     // px, smallest rock size
-const ROCK_MAX = [22, 32];     // px, largest rock size
+const ROCK_SPEED = [300, 600]; // px/s fall speed
+const ROCK_CELL = [2, 4];      // rock pixel size (rock is 8x8 cells: 16px to 32px)
 const AIM_CHANCE = [0.3, 0.7]; // chance a rock targets the climber's column (else random)
-
-// Crumble (bottom of the wall rising)
-const CRUMBLE_SPEED = [8, 40]; // px/s it rises on its own
-const CRUMBLE_LAG = [160, 40]; // px: never trails further than this below the screen
 
 const GRAY = 0x535353;
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
-
 const lerp = (range, d) => range[0] + (range[1] - range[0]) * d;
-let elapsed = 0;               // seconds since the first move
-const difficulty = () => Phaser.Math.Clamp((elapsed - EASY_SECONDS) / RAMP_SECONDS, 0, 1);
+const snap = (v) => Math.round(v / CELL) * CELL;
 
 const containerWidth = () =>
   Math.min(MAX_WIDTH, Math.floor(document.getElementById('game-container').clientWidth) || MAX_WIDTH);
@@ -90,29 +86,27 @@ window.addEventListener('resize', () => {
 });
 
 // ---- State ----
-let scene, gfx, hudText, bestText, hiText, overText;
-let rows;          // rows[r] = [{ col, jx, jy }]
-let pathCol;       // column of the guaranteed route, random-walks upward
+// phase: 'ready' (start pose, waiting for first move) | 'climbing' | 'clear' |
+//        'falling' (knocked off) | 'buried' (game over)
+let scene, gfx, hudText, bestText, overText;
+let phase, level, rows, topRow, pathCol, prevRoute;
 let hands;         // two hands: { r, i, x, y } (hold + drawn position, tweened between holds)
-let handPos;       // { x: middle of hands, y: lower hand } — where the body hangs from
-let lastMoved;     // index of the hand that moved last (ties go to the other one)
-let moving, queued;
-let prevRoute;     // last route hold, to keep the route within MAX_SPAN
-let started, dead, canRestart;
-let crumbleY, camY, spawnTimer, warnings, rocks, pile, maxClimb;
+let handPos;       // { x, y }: midpoint of the two hands — where the body hangs from
+let lastMoved, moving, queued, pose;
+let camY, spawnTimer, warnings, rocks, pile, puffs, canRestart;
+let fall;          // { x, shoulderY, vy } while falling / buried
 let best = 0;
-try { best = Number(localStorage.getItem('freesolo-best')) || 0; } catch (e) {}
+try { best = Number(localStorage.getItem('freesolo-best-level')) || 0; } catch (e) {}
 
-const colX = (col) => {
-  const margin = 28;
-  return margin + (col + 0.5) * (WIDTH - margin * 2) / COLS;
-};
+const difficulty = () => Phaser.Math.Clamp((level - 1) / (LEVELS_TO_HARDEST - 1), 0, 1);
+const colX = (col) => 28 + (col + 0.5) * (WIDTH - 56) / COLS;
 const rowY = (r) => ROW0_Y - r * ROW_GAP;
 const holdXY = (r, i) => {
   const h = rows[r][i];
   return { x: colX(h.col) + h.jx, y: rowY(r) + h.jy };
 };
 
+// ---- Level building ----
 function makeRow(r) {
   if (r === 0) {
     pathCol = Math.floor(COLS / 2);
@@ -122,13 +116,15 @@ function makeRow(r) {
   pathCol = Phaser.Math.Clamp(pathCol + Phaser.Math.Between(-1, 1), 0, COLS - 1);
   const row = [];
   for (let c = 0; c < COLS; c++) {
-    if (c === pathCol || Math.random() < lerp(EXTRA_HOLDS, Math.min(1, r / HOLD_RAMP_ROWS))) {
+    const isTop = r === topRow;
+    if (c === pathCol || (!isTop && Math.random() < lerp(EXTRA_HOLDS, difficulty()))) {
       const h = { col: c, jx: Phaser.Math.Between(-JITTER_X, JITTER_X), jy: Phaser.Math.Between(-JITTER_Y, JITTER_Y) };
       if (c === pathCol) {
         // Keep the route climbable on the widest board: pull the hold back onto the grid if it's out of span
         const gap = (a, b) => Math.hypot((b.col - a.col) * (MAX_WIDTH - 56) / COLS + b.jx - a.jx, (a.r - b.r) * ROW_GAP + b.jy - a.jy);
         if (gap(prevRoute, { r, ...h }) > MAX_SPAN - 4) { h.jx = 0; h.jy = 0; }
         prevRoute = { r, ...h };
+        if (isTop) h.top = true;
       }
       row.push(h);
     }
@@ -136,12 +132,32 @@ function makeRow(r) {
   return row;
 }
 
-function ensureRows(topY) {
-  while (rowY(rows.length - 1) > topY - ROW_GAP * 2) rows.push(makeRow(rows.length));
+function buildLevel() {
+  topRow = LEVEL_ROWS + LEVEL_ROWS_PER_LEVEL * (level - 1);
+  rows = [];
+  for (let r = 0; r <= topRow; r++) rows.push(makeRow(r));
+  const start = holdXY(0, 0);
+  hands = [{ r: 0, i: 0, x: start.x, y: start.y }, { r: 0, i: 0, x: start.x, y: start.y }];
+  handPos = { x: 0, y: 0 };
+  updateHandPos();
+  lastMoved = 1;
+  moving = false; queued = null;
+  pose = Phaser.Utils.Array.GetRandom(POSES);
+  phase = 'ready';
+  if (warnings) warnings.forEach((w) => w.text.destroy());
+  spawnTimer = GRACE_MS; warnings = []; rocks = []; puffs = []; pile = null; fall = null;
+  camY = targetCamY();
+  scene.cameras.main.scrollY = camY;
+  overText.setText(`LEVEL ${level}`);
 }
 
-const holdAlive = (r, i) => holdXY(r, i).y < crumbleY - 6;
+function newGame() {
+  level = 1;
+  canRestart = false;
+  buildLevel();
+}
 
+// ---- Moving ----
 // Swipes move one hand to the next hold in that direction: up moves the lower hand,
 // down the higher one, left the leftmost, right the rightmost (ties: the hand that
 // didn't move last). If that hand has nowhere to go, the other hand tries.
@@ -165,7 +181,7 @@ function findTarget(k, dir) {
   rows.forEach((row, r) => {
     if (Math.abs(r - h.r) > 4) return;
     row.forEach((_, i) => {
-      if ((r === h.r && i === h.i) || !holdAlive(r, i)) return;
+      if (r === h.r && i === h.i) return;
       const p = holdXY(r, i);
       const dx = p.x - from.x, dy = p.y - from.y;
       const fwd = dx * vx + dy * vy;
@@ -181,12 +197,9 @@ function findTarget(k, dir) {
 }
 
 function tryMove(dir) {
-  if (dead) return;
+  if (phase !== 'ready' && phase !== 'climbing') return;
   if (moving) { queued = dir; return; }
-  if (!started) {
-    started = true;
-    if (hiText) { hiText.destroy(); hiText = null; }
-  }
+  if (phase === 'ready') { phase = 'climbing'; overText.setText(''); }
   let k = pickHand(dir);
   let next = findTarget(k, dir);
   if (!next) { k = 1 - k; next = findTarget(k, dir); }
@@ -205,6 +218,9 @@ function tryMove(dir) {
     ease: 'Sine.easeInOut',
     onComplete: () => {
       moving = false;
+      if (phase !== 'climbing') return;
+      addPuff(h.x, h.y - 6);
+      if (hands.every((hh) => rows[hh.r][hh.i].top)) return levelClear();
       if (queued) { const q = queued; queued = null; tryMove(q); }
     }
   });
@@ -212,17 +228,96 @@ function tryMove(dir) {
 
 function updateHandPos() {
   handPos.x = (hands[0].x + hands[1].x) / 2;
-  handPos.y = Math.max(hands[0].y, hands[1].y);
+  handPos.y = (hands[0].y + hands[1].y) / 2;
 }
 
-function climberRect() {
-  // Hands at handPos; body hangs below
-  return { x: handPos.x - 11, y: handPos.y + 4, w: 22, h: 40 };
+function levelClear() {
+  phase = 'clear';
+  queued = null;
+  warnings.forEach((w) => w.text.destroy());
+  warnings = []; rocks = [];
+  if (level > best) {
+    best = level;
+    try { localStorage.setItem('freesolo-best-level', String(best)); } catch (e) {}
+  }
+  for (let n = 0; n < 4; n++) addPuff(handPos.x + Phaser.Math.Between(-20, 20), handPos.y + Phaser.Math.Between(-20, 10), n * 120);
+  overText.setText(`LEVEL ${level} CLEAR`);
+  scene.time.delayedCall(CLEAR_MS, () => { level++; buildLevel(); });
 }
-const handRect = (h) => ({ x: h.x - 7, y: h.y - 6, w: 14, h: 8 });
 
+// ---- Climber geometry ----
+// The body grid's top-left corner, its shoulders, and the hitbox.
+function bodyFrame() {
+  let shoulderY, x;
+  if (fall) { shoulderY = fall.shoulderY; x = fall.x; }
+  else if (phase === 'ready' && pose.sit) { shoulderY = -30; x = handPos.x; }  // sitting on the ground
+  else { shoulderY = handPos.y + SHOULDER_DROP; x = handPos.x; }
+  const left = snap(x) - 8 * CELL;
+  const top = snap(shoulderY) - 8 * CELL;
+  return {
+    left, top,
+    shoulderL: { x: left + 3 * CELL + 1, y: top + 8 * CELL + 3 },
+    shoulderR: { x: left + 12 * CELL + 1, y: top + 8 * CELL + 3 },
+    bag: { x: left + 14 * CELL + 1, y: top + 15 * CELL },
+    hit: { x: left + 4, y: top + 2, w: 16 * CELL - 8, h: 28 * CELL - 4 }
+  };
+}
+const handRect = (h) => ({ x: h.x - 6, y: h.y - 6, w: 12, h: 8 });
 const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
+function targetCamY() {
+  // Follow the hands (or the falling body); stop at the flag and at the ground
+  const y = fall ? fall.shoulderY : handPos.y;
+  return Phaser.Math.Clamp(y - HEIGHT * CLIMBER_FOCUS, rowY(topRow) - 80, 40 - HEIGHT);
+}
+
+// ---- Hazards ----
+function spawnWarning() {
+  const d = difficulty();
+  const myCol = Phaser.Math.Clamp(Math.round((handPos.x - 28) / ((WIDTH - 56) / COLS) - 0.5), 0, COLS - 1);
+  const col = Math.random() < lerp(AIM_CHANCE, d) ? myCol : Phaser.Math.Between(0, COLS - 1);
+  const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
+    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
+  warnings.push({ col, t: lerp(WARN_MS, d), text });
+}
+
+function knockOff() {
+  phase = 'falling';
+  queued = null;
+  scene.tweens.killTweensOf(hands);
+  moving = false;
+  warnings.forEach((w) => w.text.destroy());
+  warnings = [];
+  const b = bodyFrame();
+  fall = { x: handPos.x, shoulderY: b.top + 8 * CELL, vy: -120 };
+}
+
+function bury() {
+  phase = 'buried';
+  rocks = [];
+  // A mound of rocks drops onto him on the ground, one hand left sticking out
+  const targets = [];
+  const layers = 4, size = 8 * CELL;
+  for (let l = 0; l < layers; l++) {
+    const n = layers - l + 2;
+    for (let k = 0; k < n; k++) {
+      const x = fall.x + (k - (n - 1) / 2) * size + Phaser.Math.Between(-3, 3);
+      targets.push({ x: snap(x), y: -(l + 1) * (size - 2) });
+    }
+  }
+  pile = targets.map((t, idx) => ({ ...t, cy: camY - 30 - idx * 26, landed: false }));
+}
+
+function gameOver() {
+  overText.setText(`GAME OVER\n\nlevel ${level}\n\ntap to climb again`);
+  scene.time.delayedCall(400, () => { canRestart = true; });
+}
+
+function addPuff(x, y, delay = 0) {
+  puffs.push({ x, y, t: -delay });
+}
+
+// ---- Scene ----
 function create() {
   scene = this;
   gfx = this.add.graphics();
@@ -232,107 +327,25 @@ function create() {
   overText = this.add.text(0, 0, '', { ...style, fontSize: '20px', align: 'center', backgroundColor: '#ffffff', padding: { x: 8, y: 6 } })
     .setScrollFactor(0).setOrigin(0.5).setDepth(10);
   layoutHud();
-  reset();
+  newGame();
 }
 
 function layoutHud() {
   hudText.setX(WIDTH - 12);
   bestText.setX(WIDTH - 12);
-  overText.setPosition(WIDTH / 2, HEIGHT * 0.35);
-}
-
-function reset() {
-  rows = [];
-  pathCol = 0;
-  crumbleY = 40;
-  ensureRows(-MAX_HEIGHT * 2);
-  const start = holdXY(0, 0);
-  hands = [{ r: 0, i: 0, x: start.x, y: start.y }, { r: 0, i: 0, x: start.x, y: start.y }];
-  handPos = { x: 0, y: 0 };
-  updateHandPos();
-  lastMoved = 1;
-  moving = false; queued = null;
-  started = false; dead = false; canRestart = false;
-  if (warnings) warnings.forEach((w) => w.text.destroy());
-  spawnTimer = GRACE_MS; elapsed = 0; warnings = []; rocks = []; pile = null; maxClimb = 0;
-  camY = targetCamY();
-  scene.cameras.main.scrollY = camY;
-  overText.setText('');
-  if (hiText) hiText.destroy();
-  hiText = scene.add.text(handPos.x + 18, handPos.y - 4, 'hi', { fontFamily: FONT, fontSize: '14px', color: GRAY_CSS });
-}
-
-function targetCamY() {
-  // Follow the hands, but never show more than 40px below the ground
-  return Math.min(handPos.y - HEIGHT * CLIMBER_FOCUS, 40 - HEIGHT);
-}
-
-function spawnWarning() {
-  // Half the time aim at the climber's column, otherwise random
-  const d = difficulty();
-  const col = Math.random() < lerp(AIM_CHANCE, d) ? Phaser.Math.Clamp(Math.round((handPos.x - 28) / ((WIDTH - 56) / COLS) - 0.5), 0, COLS - 1) : Phaser.Math.Between(0, COLS - 1);
-  const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
-    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
-  warnings.push({ col, t: lerp(WARN_MS, d), text });
-}
-
-function die() {
-  if (dead) return;
-  dead = true;
-  scene.tweens.killTweensOf(hands);
-  warnings.forEach((w) => w.text.destroy());
-  warnings = [];
-  rocks = [];
-  // Burial: a mound of rocks drops onto him, one hand left sticking out
-  const c = climberRect();
-  const baseY = c.y + c.h + 4;
-  const targets = [];
-  const layers = 4;
-  for (let l = 0; l < layers; l++) {
-    const n = layers - l + 2;
-    const size = 16;
-    for (let k = 0; k < n; k++) {
-      const x = handPos.x + (k - (n - 1) / 2) * size + Phaser.Math.Between(-3, 3);
-      targets.push({ x, y: baseY - (l + 1) * size + 2, size: size + Phaser.Math.Between(-2, 2) });
-    }
-  }
-  pile = targets.map((t, idx) => ({
-    ...t,
-    cy: camY - 30 - idx * 26,   // staggered start above the screen
-    landed: false
-  }));
-}
-
-function finishGameOver() {
-  const m = Math.floor(maxClimb);
-  if (m > best) {
-    best = m;
-    try { localStorage.setItem('freesolo-best', String(best)); } catch (e) {}
-  }
-  overText.setText(`GAME OVER\n\n${m} m\n\ntap to climb again`);
-  scene.time.delayedCall(400, () => { canRestart = true; });
+  overText.setPosition(WIDTH / 2, HEIGHT * 0.3);
 }
 
 function update(time, deltaMs) {
   const dt = Math.min(deltaMs, 50) / 1000;
-  if (!dead) updateHandPos();
-  ensureRows(camY);
+  if (!fall) updateHandPos();
 
-  // Camera
   camY += (targetCamY() - camY) * Math.min(1, dt * 6);
   scene.cameras.main.scrollY = Math.round(camY);
   const camBottom = camY + HEIGHT;
+  const d = difficulty();
 
-  if (started && !dead) {
-    maxClimb = Math.max(maxClimb, (ROW0_Y - handPos.y) / PX_PER_M);
-
-    // Crumble rises, and never lags far below the screen
-    elapsed += dt;
-    const d = difficulty();
-    crumbleY = Math.min(crumbleY - lerp(CRUMBLE_SPEED, d) * dt, camBottom + lerp(CRUMBLE_LAG, d));
-    if (handPos.y + 8 >= crumbleY) die();
-
-    // Hazards
+  if (phase === 'climbing') {
     spawnTimer -= deltaMs;
     if (spawnTimer <= 0) { spawnTimer = lerp(SPAWN_MS, d); spawnWarning(); }
     warnings = warnings.filter((w) => {
@@ -340,15 +353,30 @@ function update(time, deltaMs) {
       w.text.setVisible(Math.floor(w.t / 120) % 2 === 0);
       if (w.t > 0) return true;
       w.text.destroy();
-      const size = Phaser.Math.Between(Math.round(lerp(ROCK_MIN, d)), Math.round(lerp(ROCK_MAX, d)));
-      rocks.push({ x: colX(w.col) - size / 2, y: camY - size, size, speed: lerp(ROCK_SPEED, d) });
+      const cell = Phaser.Math.Between(ROCK_CELL[0], Math.round(lerp(ROCK_CELL, d)));
+      const size = 8 * cell;
+      rocks.push({ x: colX(w.col) - size / 2, y: camY - size, size, cell, speed: lerp(ROCK_SPEED, d) });
       return false;
     });
-    const body = climberRect();
+  }
+  if (phase === 'climbing' || phase === 'falling') {
     rocks.forEach((rk) => { rk.y += rk.speed * dt; });
     rocks = rocks.filter((rk) => rk.y < camBottom + 40);
-    const parts = [body, handRect(hands[0]), handRect(hands[1])];
-    if (rocks.some((rk) => parts.some((p) => overlap(p, { x: rk.x, y: rk.y, w: rk.size, h: rk.size })))) die();
+  }
+  if (phase === 'climbing') {
+    const parts = [bodyFrame().hit, handRect(hands[0]), handRect(hands[1])];
+    if (rocks.some((rk) => parts.some((p) => overlap(p, { x: rk.x + 2, y: rk.y + 2, w: rk.size - 4, h: rk.size - 4 })))) knockOff();
+  }
+
+  if (phase === 'falling') {
+    fall.vy += FALL_GRAVITY * dt;
+    fall.shoulderY += fall.vy * dt;
+    const landed = -16 * CELL;           // fall grid bottom (row 24) on the ground
+    if (fall.shoulderY >= landed) {
+      fall.shoulderY = landed;
+      for (let n = 0; n < 3; n++) addPuff(fall.x + Phaser.Math.Between(-20, 20), -6, n * 80);
+      bury();
+    }
   }
 
   if (pile) {
@@ -358,85 +386,152 @@ function update(time, deltaMs) {
       p.cy = Math.min(p.y, p.cy + ROCK_SPEED[1] * 1.2 * dt);
       if (p.cy >= p.y) p.landed = true; else allLanded = false;
     });
-    if (allLanded && !overText.text) finishGameOver();
+    if (allLanded && !overText.text) gameOver();
   }
 
-  hudText.setText(`${Math.floor(maxClimb)} m`);
-  bestText.setText(best ? `best ${best} m` : '');
-  draw();
+  // Chalking pose keeps puffing
+  if (phase === 'ready' && pose.arm && pose.arm.to === 'bag' && Math.floor(time / 600) !== Math.floor((time - deltaMs) / 600)) {
+    const b = bodyFrame().bag;
+    addPuff(b.x, b.y - 4);
+  }
+  puffs.forEach((p) => { p.t += deltaMs; });
+  puffs = puffs.filter((p) => p.t < 500);
+
+  hudText.setText(`level ${level}`);
+  bestText.setText(best ? `best ${best}` : '');
+  draw(time);
 }
 
-function draw() {
-  gfx.clear();
+// ---- Drawing ----
+const runCache = new Map();
+function runsOf(grid) {
+  let runs = runCache.get(grid);
+  if (runs) return runs;
+  runs = [];
+  grid.forEach((row, y) => {
+    let x = 0;
+    while (x < row.length) {
+      const ch = row[x];
+      let w = 1;
+      while (row[x + w] === ch) w++;
+      if (ch !== '.') runs.push({ x, y, w, ch });
+      x += w;
+    }
+  });
+  runCache.set(grid, runs);
+  return runs;
+}
+
+function drawGrid(grid, x, y, cell = CELL, alpha = 1) {
+  x = snap(x); y = snap(y);
+  runsOf(grid).forEach((r) => {
+    gfx.fillStyle(r.ch === 'w' ? 0xffffff : GRAY, alpha);
+    gfx.fillRect(x + r.x * cell, y + r.y * cell, r.w * cell, cell);
+  });
+}
+
+function drawArm(a, b) {
+  // Chunky stepped arm: 4px blocks every 2px from shoulder to hand
   gfx.fillStyle(GRAY, 1);
+  const steps = Math.max(1, Math.ceil(Phaser.Math.Distance.Between(a.x, a.y, b.x, b.y) / CELL));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    gfx.fillRect(snap(a.x + (b.x - a.x) * t) - 2, snap(a.y + (b.y - a.y) * t) - 2, 4, 4);
+  }
+}
+
+function drawClimber(time) {
+  const f = bodyFrame();
+  let grid;
+  if (fall) grid = BODY.fall[Math.floor(time / 100) % 2];
+  else if (phase === 'ready') grid = pose.grid;
+  else if (moving) grid = BODY.reach[lastMoved];
+  else grid = BODY.hang[Math.floor(time / 500) % 2];
+
+  // Where each hand is drawn: on its hold, or off it for some poses / when falling
+  const [lk, rk] = hands[0].x <= hands[1].x ? [0, 1] : [1, 0];
+  const handAt = (k, shoulder, side) => {
+    if (fall) {
+      const flap = Math.floor(time / 100) % 2 ? 4 : -4;
+      return { x: shoulder.x + side * 10, y: shoulder.y - 22 + flap * side };
+    }
+    if (phase === 'ready' && pose.arm && pose.arm.hand === k) {
+      return pose.arm.to === 'bag' ? { x: f.bag.x, y: f.bag.y + 4 } : { x: shoulder.x + side * 30, y: shoulder.y - 18 };
+    }
+    return hands[k];
+  };
+  const lh = handAt(lk, f.shoulderL, -1);
+  const rh = handAt(rk, f.shoulderR, 1);
+  drawArm(f.shoulderL, lh);
+  drawArm(f.shoulderR, rh);
+  drawGrid(grid, f.left, f.top);
+  drawGrid(HAND, lh.x - 4, lh.y - 6);
+  drawGrid(HAND, rh.x - 4, rh.y - 6);
+
+  // "hi" speech bubble on the start pose
+  if (phase === 'ready') {
+    const bx = snap(f.left + 16 * CELL + 2), by = snap(f.top - 14);
+    gfx.fillStyle(GRAY, 1);
+    gfx.fillRect(bx, by, 18, 16);
+    gfx.fillRect(bx - 2, by + 14, 4, 4);
+    gfx.fillStyle(0xffffff, 1);
+    gfx.fillRect(bx + 2, by + 2, 14, 12);
+    drawGrid(HI, bx + 4, by + 3);
+  }
+}
+
+function draw(time) {
+  gfx.clear();
   const top = camY - 10, bottom = camY + HEIGHT + 10;
 
   // Ground
+  gfx.fillStyle(GRAY, 1);
   gfx.fillRect(0, 0, WIDTH, 3);
+  for (let x = 6; x < WIDTH; x += 37) gfx.fillRect(x, 6 + (x % 5), 4, 2);
 
-  // Holds
+  // Holds, with a flag on the top one
   rows.forEach((row, r) => {
     const y0 = rowY(r);
-    if (y0 < top - 20 || y0 > bottom + 20) return;
+    if (y0 < top - 40 || y0 > bottom + 20) return;
     row.forEach((h, i) => {
-      if (!holdAlive(r, i)) return;
       const p = holdXY(r, i);
-      gfx.fillRect(p.x - 8, p.y - 4, 16, 8);
+      drawGrid(HOLD, p.x - 8, p.y - 4);
+      if (h.top) drawGrid(FLAG, p.x + 6, p.y - 4 - FLAG.length * CELL);
     });
   });
 
-  // Crumble: jagged band from crumbleY down
-  if (crumbleY < bottom) {
-    const step = 8;
-    for (let x = 0; x < WIDTH; x += step) {
-      const jag = ((x * 7919) % 13) - 6;
-      gfx.fillRect(x, crumbleY + jag, step, bottom - crumbleY - jag);
-    }
-    for (let x = 4; x < WIDTH; x += 23) {
-      gfx.fillRect(x, crumbleY - 14 - ((x * 31) % 9), 4, 4); // loose debris
-    }
-  }
-
-  // Climber: two hands, arms to the shoulders, body hanging below the lower hand
-  const c = climberRect();
-  const [lh, rh] = hands[0].x <= hands[1].x ? hands : [hands[1], hands[0]];
-  gfx.lineStyle(3, GRAY, 1);
-  gfx.lineBetween(lh.x, lh.y, c.x + 3, c.y + 8);
-  gfx.lineBetween(rh.x, rh.y, c.x + c.w - 3, c.y + 8);
-  gfx.fillRect(lh.x - 4, lh.y - 6, 8, 7);
-  gfx.fillRect(rh.x - 4, rh.y - 6, 8, 7);
-  gfx.fillRect(c.x, c.y + 4, c.w, c.h - 4);
+  if (!pile || !pile.every((p) => p.landed)) drawClimber(time);
 
   // Falling rocks
-  rocks.forEach((rk) => gfx.fillRect(rk.x, rk.y, rk.size, rk.size));
+  rocks.forEach((rk) => drawGrid(ROCK, rk.x, rk.y, rk.cell));
 
   // Burial pile, plus the hand sticking out
   if (pile) {
-    pile.forEach((p) => {
-      gfx.fillStyle(0xffffff, 1);
-      gfx.fillRect(p.x - p.size / 2 - 1, p.cy - 1, p.size + 2, p.size + 2);
-      gfx.fillStyle(GRAY, 1);
-      gfx.fillRect(p.x - p.size / 2, p.cy, p.size, p.size);
-    });
-    if (pile.every((p) => p.landed)) {
+    const landed = pile.every((p) => p.landed);
+    if (landed) {
       const topY = Math.min(...pile.map((p) => p.y));
-      gfx.fillRect(handPos.x - 3, topY - 14, 6, 14);
-      gfx.fillRect(handPos.x - 5, topY - 18, 10, 6);
+      drawGrid(BURIED_HAND, fall.x - 6, topY - BURIED_HAND.length * CELL + 4);
     }
+    pile.forEach((p) => drawGrid(ROCK, p.x - 8, p.cy));
   }
 
+  // Chalk puffs
+  puffs.forEach((p) => {
+    if (p.t < 0) return;
+    drawGrid(PUFF[p.t < 220 ? 0 : 1], p.x - 5, p.y - 5 - p.t / 40, CELL, 0.6);
+  });
 }
 
 // ---- Input: arrows, swipes, taps ----
+const restartIfOver = () => { if (phase === 'buried' && canRestart) newGame(); };
 const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 window.addEventListener('keydown', (e) => {
   if (KEYS[e.key]) {
     e.preventDefault();
-    if (dead) { if (canRestart) reset(); return; }
-    tryMove(KEYS[e.key]);
-  } else if ((e.key === ' ' || e.key === 'Enter') && dead && canRestart) {
+    if (phase === 'buried') restartIfOver(); else tryMove(KEYS[e.key]);
+  } else if (e.key === ' ' || e.key === 'Enter') {
     e.preventDefault();
-    reset();
+    restartIfOver();
   }
 });
 
@@ -450,14 +545,13 @@ window.addEventListener('pointermove', (e) => {
   const dx = e.clientX - swipeStart.x, dy = e.clientY - swipeStart.y;
   if (Math.hypot(dx, dy) < SWIPE_PX) return;
   swipeStart.used = true;  // one move per swipe
-  if (dead) return;
   tryMove(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
 });
-window.addEventListener('pointerup', (e) => {
+window.addEventListener('pointerup', () => {
   if (!swipeStart) return;
   const wasTap = !swipeStart.used;
   swipeStart = null;
-  if (wasTap && dead && canRestart) reset();
+  if (wasTap) restartIfOver();
 });
 window.addEventListener('pointercancel', () => { swipeStart = null; });
 // Belt and braces for iOS: no page scroll / pull-to-refresh while swiping
