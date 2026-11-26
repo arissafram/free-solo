@@ -1,30 +1,53 @@
-// Free Solo — phase 1 gray box. Boxes for holds, climber and rocks.
+// Free Solo — gray box. Boxes for holds, climber and rocks.
 // World y grows downward; the ground is y = 0 and the wall goes up into negative y.
 
-// ---- Tuning (phase 2 will tune these) ----
+// ---- Board size (not gameplay) ----
 const MAX_WIDTH = 480;
 const MAX_HEIGHT = 720;
 const MIN_HEIGHT = 360;
 const PAGE_PADDING = 32;       // 16px above + 16px below the board
-const COLS = 5;
-const ROW_GAP = 70;            // px between hold rows
+const SWIPE_PX = 24;           // finger travel that counts as a swipe
+
+// ---- Gameplay tuning: every gameplay number lives here ----
+// Ranged knobs are [easy, hard]. Difficulty d goes 0 -> 1: it stays 0 for EASY_SECONDS
+// after the first move, then rises linearly over RAMP_SECONDS and holds at 1.
+const EASY_SECONDS = 20;       // calm opening: slow, rare, well-warned rocks
+const RAMP_SECONDS = 120;      // time from easy to full difficulty after that
+
+// Wall
+const COLS = 5;                // hold columns
+const ROW_GAP = 70;            // px between hold rows (one move up = one row)
 const ROW0_Y = -60;            // lowest hold row (start hold)
-const PX_PER_M = 35;           // 2 m per row
-const EXTRA_HOLD_CHANCE = 0.4; // chance of a hold in each non-path column
+const PX_PER_M = 35;           // score: 2 m per row
 const JITTER = 10;             // px holds are nudged off the grid
+const EXTRA_HOLDS = [0.6, 0.2];// chance of a hold in each non-route column (rest are gaps)
+const HOLD_RAMP_ROWS = 80;     // rows over which EXTRA_HOLDS goes easy -> hard (by height)
+
+// Climber + camera
 const MOVE_MS = 110;           // base reach time...
 const MOVE_MS_PER_PX = 0.6;    // ...plus this per px of reach
 const CLIMBER_FOCUS = 0.62;    // climber's hands sit this far down the screen
-const CRUMBLE_SPEED = 12;      // px/s the crumble rises on its own
-const CRUMBLE_LAG = 60;        // crumble never trails more than this below the screen
-const SPAWN_MS = 1500;         // time between hazards
-const WARN_MS = 900;           // "!" shows this long before the rock drops
-const ROCK_SPEED = 420;        // px/s
-const SWIPE_PX = 24;           // finger travel that counts as a swipe
+
+// Falling rocks
+const GRACE_MS = 2500;         // no rocks at all for this long after the first move
+const SPAWN_MS = [2200, 650];  // time between "!" warnings
+const WARN_MS = [1100, 550];   // "!" shows this long before the rock drops
+const ROCK_SPEED = [300, 620]; // px/s fall speed
+const ROCK_MIN = [16, 20];     // px, smallest rock size
+const ROCK_MAX = [22, 32];     // px, largest rock size
+const AIM_CHANCE = [0.3, 0.7]; // chance a rock targets the climber's column (else random)
+
+// Crumble (bottom of the wall rising)
+const CRUMBLE_SPEED = [8, 40]; // px/s it rises on its own
+const CRUMBLE_LAG = [160, 40]; // px: never trails further than this below the screen
 
 const GRAY = 0x535353;
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
+
+const lerp = (range, d) => range[0] + (range[1] - range[0]) * d;
+let elapsed = 0;               // seconds since the first move
+const difficulty = () => Phaser.Math.Clamp((elapsed - EASY_SECONDS) / RAMP_SECONDS, 0, 1);
 
 const containerWidth = () =>
   Math.min(MAX_WIDTH, Math.floor(document.getElementById('game-container').clientWidth) || MAX_WIDTH);
@@ -89,7 +112,7 @@ function makeRow(r) {
   pathCol = Phaser.Math.Clamp(pathCol + Phaser.Math.Between(-1, 1), 0, COLS - 1);
   const row = [];
   for (let c = 0; c < COLS; c++) {
-    if (c === pathCol || Math.random() < EXTRA_HOLD_CHANCE) {
+    if (c === pathCol || Math.random() < lerp(EXTRA_HOLDS, Math.min(1, r / HOLD_RAMP_ROWS))) {
       row.push({ col: c, jx: Phaser.Math.Between(-JITTER, JITTER), jy: Phaser.Math.Between(-JITTER, JITTER) });
     }
   }
@@ -188,7 +211,7 @@ function reset() {
   moving = false; queued = null;
   started = false; dead = false; canRestart = false;
   if (warnings) warnings.forEach((w) => w.text.destroy());
-  spawnTimer = SPAWN_MS; warnings = []; rocks = []; pile = null; maxClimb = 0;
+  spawnTimer = GRACE_MS; elapsed = 0; warnings = []; rocks = []; pile = null; maxClimb = 0;
   camY = targetCamY();
   scene.cameras.main.scrollY = camY;
   overText.setText('');
@@ -203,10 +226,11 @@ function targetCamY() {
 
 function spawnWarning() {
   // Half the time aim at the climber's column, otherwise random
-  const col = Math.random() < 0.5 ? rows[hand.r][hand.i].col : Phaser.Math.Between(0, COLS - 1);
+  const d = difficulty();
+  const col = Math.random() < lerp(AIM_CHANCE, d) ? rows[hand.r][hand.i].col : Phaser.Math.Between(0, COLS - 1);
   const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
-  warnings.push({ col, t: WARN_MS, text });
+  warnings.push({ col, t: lerp(WARN_MS, d), text });
 }
 
 function die() {
@@ -259,23 +283,25 @@ function update(time, deltaMs) {
     maxClimb = Math.max(maxClimb, (ROW0_Y - handPos.y) / PX_PER_M);
 
     // Crumble rises, and never lags far below the screen
-    crumbleY = Math.min(crumbleY - CRUMBLE_SPEED * dt, camBottom + CRUMBLE_LAG);
+    elapsed += dt;
+    const d = difficulty();
+    crumbleY = Math.min(crumbleY - lerp(CRUMBLE_SPEED, d) * dt, camBottom + lerp(CRUMBLE_LAG, d));
     if (handPos.y + 8 >= crumbleY) die();
 
     // Hazards
     spawnTimer -= deltaMs;
-    if (spawnTimer <= 0) { spawnTimer = SPAWN_MS; spawnWarning(); }
+    if (spawnTimer <= 0) { spawnTimer = lerp(SPAWN_MS, d); spawnWarning(); }
     warnings = warnings.filter((w) => {
       w.t -= deltaMs;
       w.text.setVisible(Math.floor(w.t / 120) % 2 === 0);
       if (w.t > 0) return true;
       w.text.destroy();
-      const size = Phaser.Math.Between(16, 26);
-      rocks.push({ x: colX(w.col) - size / 2, y: camY - size, size });
+      const size = Phaser.Math.Between(Math.round(lerp(ROCK_MIN, d)), Math.round(lerp(ROCK_MAX, d)));
+      rocks.push({ x: colX(w.col) - size / 2, y: camY - size, size, speed: lerp(ROCK_SPEED, d) });
       return false;
     });
     const body = climberRect();
-    rocks.forEach((rk) => { rk.y += ROCK_SPEED * dt; });
+    rocks.forEach((rk) => { rk.y += rk.speed * dt; });
     rocks = rocks.filter((rk) => rk.y < camBottom + 40);
     if (rocks.some((rk) => overlap(body, { x: rk.x, y: rk.y, w: rk.size, h: rk.size }))) die();
   }
@@ -284,7 +310,7 @@ function update(time, deltaMs) {
     let allLanded = true;
     pile.forEach((p) => {
       if (p.landed) return;
-      p.cy = Math.min(p.y, p.cy + ROCK_SPEED * 1.6 * dt);
+      p.cy = Math.min(p.y, p.cy + ROCK_SPEED[1] * 1.2 * dt);
       if (p.cy >= p.y) p.landed = true; else allLanded = false;
     });
     if (allLanded && !overText.text) finishGameOver();
