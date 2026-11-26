@@ -515,12 +515,6 @@ function draw(time) {
   gfx.fillRect(left, 0, right - left, 3);
   for (let x = left - (((left % 37) + 37) % 37) + 6; x < right; x += 37) gfx.fillRect(x, 6 + (((x % 5) + 5) % 5), 4, 2);
 
-  // Wall edges: dashed lines where the wall ends
-  for (const ex of [-WALL_EDGE, WALL_W + WALL_EDGE - 2]) {
-    if (ex < left || ex > right) continue;
-    for (let y = Math.floor(top / 16) * 16; y < Math.min(bottom, 0); y += 16) gfx.fillRect(ex, y, 2, 8);
-  }
-
   // Holds
   for (let r = 0; r < rows.length; r++) {
     const y0 = rowY(r);
