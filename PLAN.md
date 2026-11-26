@@ -18,4 +18,4 @@ _Pivot during phase 4 (user request): endless climb + crumble → levels, no cru
 2. **Tune** — spacing, gaps, fall speed, crumble speed, difficulty ramp. Constants at top of game.js.
 3. **Hands + reach** — two-hand rule, off-grid holds, slow long reaches.
 4. **Sprites** — text-grid sprites (like dino `tools/`), 2 frames each: hang, reach, fall; start poses, "hi", chalk puffs, burial pile.
-5. **Polish + share** — screen shake, sound, best score, og image, favicon, deploy.
+5. **Polish + share** — screen shake, sound, best score, og image, favicon, deploy. Done: shake + WebAudio blips, best level saved, `node tools/make_icons.js` builds favicon/apple-touch/og-image. Deploy is left to the user.

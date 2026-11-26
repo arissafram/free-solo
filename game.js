@@ -45,6 +45,11 @@ const ROCK_SPEED = [300, 600]; // px/s fall speed
 const ROCK_CELL = [2, 4];      // rock pixel size (rock is 8x8 cells: 16px to 32px)
 const AIM_CHANCE = [0.3, 0.7]; // chance a rock targets the climber's column (else random)
 
+// Juice
+const SHAKE_MS = 300;          // screen shake when a rock hits...
+const SHAKE_AMT = 0.02;        // ...this strong (fraction of the board)
+const VOLUME = 0.15;           // master volume for the chiptune sound effects
+
 const GRAY = 0x535353;
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
@@ -97,6 +102,44 @@ let camY, spawnTimer, warnings, rocks, puffs, canRestart;
 let fall;          // { x, shoulderY, vy } while falling / over
 let best = 0;
 try { best = Number(localStorage.getItem('freesolo-best-level')) || 0; } catch (e) {}
+function saveBest() {
+  if (level <= best) return false;
+  best = level;
+  try { localStorage.setItem('freesolo-best-level', String(best)); } catch (e) {}
+  return true;
+}
+
+// ---- Sound: tiny square-wave blips through WebAudio, no files ----
+let audio = null;
+function unlockAudio() {
+  try {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === 'suspended') audio.resume();
+  } catch (e) { audio = null; }
+}
+// notes: [[freqStart, freqEnd, startSec, durSec], ...]
+function blip(notes, type = 'square', vol = 1) {
+  if (!audio || audio.state !== 'running') return;
+  const t0 = audio.currentTime;
+  notes.forEach(([f0, f1, at, dur]) => {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t0 + at);
+    o.frequency.exponentialRampToValueAtTime(f1, t0 + at + dur);
+    g.gain.setValueAtTime(VOLUME * vol, t0 + at);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+    o.connect(g).connect(audio.destination);
+    o.start(t0 + at);
+    o.stop(t0 + at + dur + 0.02);
+  });
+}
+const SFX = {
+  grab: () => blip([[880, 660, 0, 0.05]], 'square', 0.6),
+  longReach: () => blip([[220, 520, 0, 0.22]], 'triangle', 1.2),
+  warn: () => blip([[1320, 1320, 0, 0.05], [1320, 1320, 0.1, 0.05]], 'square', 0.5),
+  hit: () => blip([[400, 60, 0, 0.35], [180, 40, 0, 0.3]], 'sawtooth', 1),
+  clear: () => blip([[523, 523, 0, 0.09], [659, 659, 0.09, 0.09], [784, 784, 0.18, 0.09], [1047, 1047, 0.27, 0.22]], 'square', 0.7)
+};
 
 const difficulty = () => Phaser.Math.Clamp((level - 1) / (LEVELS_TO_HARDEST - 1), 0, 1);
 const colX = (col) => 28 + (col + 0.5) * (WIDTH - 56) / COLS;
@@ -209,6 +252,7 @@ function tryMove(dir) {
   const dist = Phaser.Math.Distance.Between(h.x, h.y, to.x, to.y);
   moving = true;
   lastMoved = k;
+  if (dist > LONG_REACH_PX) SFX.longReach();
   h.r = next.r; h.i = next.i;
   scene.tweens.add({
     targets: h,
@@ -220,6 +264,7 @@ function tryMove(dir) {
       moving = false;
       if (phase !== 'climbing') return;
       addPuff(h.x, h.y - 6);
+      SFX.grab();
       if (hands.every((hh) => rows[hh.r][hh.i].top)) return levelClear();
       if (queued) { const q = queued; queued = null; tryMove(q); }
     }
@@ -236,10 +281,8 @@ function levelClear() {
   queued = null;
   warnings.forEach((w) => w.text.destroy());
   warnings = []; rocks = [];
-  if (level > best) {
-    best = level;
-    try { localStorage.setItem('freesolo-best-level', String(best)); } catch (e) {}
-  }
+  saveBest();
+  SFX.clear();
   for (let n = 0; n < 4; n++) addPuff(handPos.x + Phaser.Math.Between(-20, 20), handPos.y + Phaser.Math.Between(-20, 10), n * 120);
   overText.setText(`LEVEL ${level} CLEAR`);
   scene.time.delayedCall(CLEAR_MS, () => { level++; buildLevel(); });
@@ -279,6 +322,7 @@ function spawnWarning() {
   const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
   warnings.push({ col, t: lerp(WARN_MS, d), text });
+  SFX.warn();
 }
 
 function knockOff() {
@@ -288,6 +332,8 @@ function knockOff() {
   moving = false;
   warnings.forEach((w) => w.text.destroy());
   warnings = [];
+  scene.cameras.main.shake(SHAKE_MS, SHAKE_AMT);
+  SFX.hit();
   const b = bodyFrame();
   fall = { x: handPos.x, shoulderY: b.top + 8 * CELL, vy: -120 };
 }
@@ -295,7 +341,8 @@ function knockOff() {
 function gameOver() {
   phase = 'over';
   rocks = [];
-  overText.setText(`GAME OVER\n\nlevel ${level}\n\ntap to climb again`);
+  const isBest = saveBest() && level > 1;
+  overText.setText(`GAME OVER\n\nlevel ${level}${isBest ? ' - new best!' : ''}\n\ntap to climb again`);
   scene.time.delayedCall(400, () => { canRestart = true; });
 }
 
@@ -492,6 +539,7 @@ function draw(time) {
 const restartIfOver = () => { if (phase === 'over' && canRestart) newGame(); };
 const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 window.addEventListener('keydown', (e) => {
+  unlockAudio();
   if (KEYS[e.key]) {
     e.preventDefault();
     if (phase === 'over') restartIfOver(); else tryMove(KEYS[e.key]);
@@ -503,6 +551,7 @@ window.addEventListener('keydown', (e) => {
 
 let swipeStart = null;
 window.addEventListener('pointerdown', (e) => {
+  unlockAudio();
   if (!e.isPrimary) return;
   swipeStart = { x: e.clientX, y: e.clientY, used: false };
 });
@@ -521,4 +570,5 @@ window.addEventListener('pointerup', () => {
 });
 window.addEventListener('pointercancel', () => { swipeStart = null; });
 // Belt and braces for iOS: no page scroll / pull-to-refresh while swiping
+window.addEventListener('touchend', unlockAudio);
 document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
