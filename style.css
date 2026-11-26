@@ -1,0 +1,47 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  /* Swipes are moves, so the page itself never scrolls, zooms or pulls to refresh */
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+body {
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  font-family: monospace;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 16px;
+}
+
+.frame {
+  line-height: 0;
+}
+
+#game-container {
+  /* Width shrinks on small screens; height is set by game.js to fit the window */
+  width: min(480px, calc(100vw - 32px));
+  height: 640px;
+}
+
+#game-container canvas {
+  display: block;
+}
