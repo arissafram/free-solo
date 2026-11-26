@@ -19,13 +19,19 @@ const COLS = 5;                // hold columns
 const ROW_GAP = 70;            // px between hold rows (one move up = one row)
 const ROW0_Y = -60;            // lowest hold row (start hold)
 const PX_PER_M = 35;           // score: 2 m per row
-const JITTER = 10;             // px holds are nudged off the grid
+const JITTER_X = 22;           // px holds are nudged off the grid sideways...
+const JITTER_Y = 18;           // ...and up/down, so reach distances vary
 const EXTRA_HOLDS = [0.6, 0.2];// chance of a hold in each non-route column (rest are gaps)
 const HOLD_RAMP_ROWS = 80;     // rows over which EXTRA_HOLDS goes easy -> hard (by height)
 
 // Climber + camera
 const MOVE_MS = 110;           // base reach time...
-const MOVE_MS_PER_PX = 0.6;    // ...plus this per px of reach
+const MOVE_MS_PER_PX = 0.6;    // ...plus this per px of reach...
+const LONG_REACH_PX = 90;      // ...and reaches longer than this...
+const LONG_REACH_MS_PER_PX = 4;// ...cost this much extra per px beyond it
+const MAX_SPAN = 150;          // px: hands share a hold or sit on holds at most this far apart
+const DIR_CONE = 1.3;          // a hold is "in that direction" if its sideways offset <= this x forward distance
+const MIN_STEP = 8;            // px: a target must be at least this far in the swipe direction
 const CLIMBER_FOCUS = 0.62;    // climber's hands sit this far down the screen
 
 // Falling rocks
@@ -79,6 +85,7 @@ window.addEventListener('resize', () => {
     document.getElementById('game-container').style.height = HEIGHT + 'px';
     game.scale.resize(WIDTH, HEIGHT);
     if (scene) layoutHud();
+    if (hands && !moving) hands.forEach((h) => Object.assign(h, holdXY(h.r, h.i)));
   }
 });
 
@@ -86,9 +93,11 @@ window.addEventListener('resize', () => {
 let scene, gfx, hudText, bestText, hiText, overText;
 let rows;          // rows[r] = [{ col, jx, jy }]
 let pathCol;       // column of the guaranteed route, random-walks upward
-let hand;          // { r, i } current hold
-let handPos;       // { x, y } drawn hand position (tweens between holds)
+let hands;         // two hands: { r, i, x, y } (hold + drawn position, tweened between holds)
+let handPos;       // { x: middle of hands, y: lower hand } — where the body hangs from
+let lastMoved;     // index of the hand that moved last (ties go to the other one)
 let moving, queued;
+let prevRoute;     // last route hold, to keep the route within MAX_SPAN
 let started, dead, canRestart;
 let crumbleY, camY, spawnTimer, warnings, rocks, pile, maxClimb;
 let best = 0;
@@ -107,13 +116,21 @@ const holdXY = (r, i) => {
 function makeRow(r) {
   if (r === 0) {
     pathCol = Math.floor(COLS / 2);
+    prevRoute = { r: 0, col: pathCol, jx: 0, jy: 0 };
     return [{ col: pathCol, jx: 0, jy: 0 }];
   }
   pathCol = Phaser.Math.Clamp(pathCol + Phaser.Math.Between(-1, 1), 0, COLS - 1);
   const row = [];
   for (let c = 0; c < COLS; c++) {
     if (c === pathCol || Math.random() < lerp(EXTRA_HOLDS, Math.min(1, r / HOLD_RAMP_ROWS))) {
-      row.push({ col: c, jx: Phaser.Math.Between(-JITTER, JITTER), jy: Phaser.Math.Between(-JITTER, JITTER) });
+      const h = { col: c, jx: Phaser.Math.Between(-JITTER_X, JITTER_X), jy: Phaser.Math.Between(-JITTER_Y, JITTER_Y) };
+      if (c === pathCol) {
+        // Keep the route climbable on the widest board: pull the hold back onto the grid if it's out of span
+        const gap = (a, b) => Math.hypot((b.col - a.col) * (MAX_WIDTH - 56) / COLS + b.jx - a.jx, (a.r - b.r) * ROW_GAP + b.jy - a.jy);
+        if (gap(prevRoute, { r, ...h }) > MAX_SPAN - 4) { h.jx = 0; h.jy = 0; }
+        prevRoute = { r, ...h };
+      }
+      row.push(h);
     }
   }
   return row;
@@ -125,28 +142,42 @@ function ensureRows(topY) {
 
 const holdAlive = (r, i) => holdXY(r, i).y < crumbleY - 6;
 
-// Next hold in a direction: up/down looks 1-2 rows away within one column;
-// left/right looks along the row (up to 2 columns), then one row up/down.
-function findNext(dir) {
-  const { r, i } = hand;
-  const c = rows[r][i].col;
-  const pick = (rr, test) => {
-    if (rr < 0 || !rows[rr]) return null;
-    let bestI = -1, bestD = Infinity;
-    rows[rr].forEach((h, j) => {
-      if (!test(h) || !holdAlive(rr, j)) return;
-      const d = Math.abs(h.col - c);
-      if (d < bestD) { bestD = d; bestI = j; }
+// Swipes move one hand to the next hold in that direction: up moves the lower hand,
+// down the higher one, left the leftmost, right the rightmost (ties: the hand that
+// didn't move last). If that hand has nowhere to go, the other hand tries.
+// The moving hand must land within MAX_SPAN of the other hand (or on its hold).
+const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+
+function pickHand(dir) {
+  const [a, b] = hands;
+  const key = dir === 'up' ? (h) => h.y : dir === 'down' ? (h) => -h.y
+    : dir === 'left' ? (h) => -h.x : (h) => h.x;
+  const ka = key(a), kb = key(b);
+  if (Math.abs(ka - kb) < 4) return 1 - lastMoved;
+  return ka > kb ? 0 : 1;
+}
+
+function findTarget(k, dir) {
+  const h = hands[k], o = hands[1 - k];
+  const from = holdXY(h.r, h.i), anchor = holdXY(o.r, o.i);
+  const [vx, vy] = DIRS[dir];
+  let best = null, bestScore = Infinity;
+  rows.forEach((row, r) => {
+    if (Math.abs(r - h.r) > 4) return;
+    row.forEach((_, i) => {
+      if ((r === h.r && i === h.i) || !holdAlive(r, i)) return;
+      const p = holdXY(r, i);
+      const dx = p.x - from.x, dy = p.y - from.y;
+      const fwd = dx * vx + dy * vy;
+      const side = Math.abs(dx * vy - dy * vx);
+      if (fwd < MIN_STEP || side > fwd * DIR_CONE) return;
+      const same = r === o.r && i === o.i;
+      if (!same && Phaser.Math.Distance.Between(p.x, p.y, anchor.x, anchor.y) > MAX_SPAN) return;
+      const score = fwd + side * 1.5;  // nearest hold, favouring straight lines
+      if (score < bestScore) { bestScore = score; best = { r, i }; }
     });
-    return bestI >= 0 ? { r: rr, i: bestI } : null;
-  };
-  const near = (h) => Math.abs(h.col - c) <= 1;
-  if (dir === 'up') return pick(r + 1, near) || pick(r + 2, (h) => h.col === c);
-  if (dir === 'down') return pick(r - 1, near) || pick(r - 2, (h) => h.col === c);
-  const s = dir === 'left' ? -1 : 1;
-  const side = (h) => (h.col - c) * s >= 1 && (h.col - c) * s <= 2;
-  const diag = (h) => h.col - c === s;
-  return pick(r, side) || pick(r + 1, diag) || pick(r - 1, diag);
+  });
+  return best;
 }
 
 function tryMove(dir) {
@@ -156,18 +187,21 @@ function tryMove(dir) {
     started = true;
     if (hiText) { hiText.destroy(); hiText = null; }
   }
-  const next = findNext(dir);
+  let k = pickHand(dir);
+  let next = findTarget(k, dir);
+  if (!next) { k = 1 - k; next = findTarget(k, dir); }
   if (!next) return;
-  const from = { ...handPos };
+  const h = hands[k];
   const to = holdXY(next.r, next.i);
-  const dist = Phaser.Math.Distance.Between(from.x, from.y, to.x, to.y);
+  const dist = Phaser.Math.Distance.Between(h.x, h.y, to.x, to.y);
   moving = true;
-  hand = next;
+  lastMoved = k;
+  h.r = next.r; h.i = next.i;
   scene.tweens.add({
-    targets: handPos,
+    targets: h,
     x: to.x,
     y: to.y,
-    duration: MOVE_MS + dist * MOVE_MS_PER_PX,
+    duration: MOVE_MS + dist * MOVE_MS_PER_PX + Math.max(0, dist - LONG_REACH_PX) * LONG_REACH_MS_PER_PX,
     ease: 'Sine.easeInOut',
     onComplete: () => {
       moving = false;
@@ -176,10 +210,16 @@ function tryMove(dir) {
   });
 }
 
+function updateHandPos() {
+  handPos.x = (hands[0].x + hands[1].x) / 2;
+  handPos.y = Math.max(hands[0].y, hands[1].y);
+}
+
 function climberRect() {
   // Hands at handPos; body hangs below
   return { x: handPos.x - 11, y: handPos.y + 4, w: 22, h: 40 };
 }
+const handRect = (h) => ({ x: h.x - 7, y: h.y - 6, w: 14, h: 8 });
 
 const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
@@ -206,8 +246,11 @@ function reset() {
   pathCol = 0;
   crumbleY = 40;
   ensureRows(-MAX_HEIGHT * 2);
-  hand = { r: 0, i: 0 };
-  handPos = holdXY(0, 0);
+  const start = holdXY(0, 0);
+  hands = [{ r: 0, i: 0, x: start.x, y: start.y }, { r: 0, i: 0, x: start.x, y: start.y }];
+  handPos = { x: 0, y: 0 };
+  updateHandPos();
+  lastMoved = 1;
   moving = false; queued = null;
   started = false; dead = false; canRestart = false;
   if (warnings) warnings.forEach((w) => w.text.destroy());
@@ -227,7 +270,7 @@ function targetCamY() {
 function spawnWarning() {
   // Half the time aim at the climber's column, otherwise random
   const d = difficulty();
-  const col = Math.random() < lerp(AIM_CHANCE, d) ? rows[hand.r][hand.i].col : Phaser.Math.Between(0, COLS - 1);
+  const col = Math.random() < lerp(AIM_CHANCE, d) ? Phaser.Math.Clamp(Math.round((handPos.x - 28) / ((WIDTH - 56) / COLS) - 0.5), 0, COLS - 1) : Phaser.Math.Between(0, COLS - 1);
   const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
     .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
   warnings.push({ col, t: lerp(WARN_MS, d), text });
@@ -236,7 +279,7 @@ function spawnWarning() {
 function die() {
   if (dead) return;
   dead = true;
-  scene.tweens.killTweensOf(handPos);
+  scene.tweens.killTweensOf(hands);
   warnings.forEach((w) => w.text.destroy());
   warnings = [];
   rocks = [];
@@ -272,6 +315,7 @@ function finishGameOver() {
 
 function update(time, deltaMs) {
   const dt = Math.min(deltaMs, 50) / 1000;
+  if (!dead) updateHandPos();
   ensureRows(camY);
 
   // Camera
@@ -303,7 +347,8 @@ function update(time, deltaMs) {
     const body = climberRect();
     rocks.forEach((rk) => { rk.y += rk.speed * dt; });
     rocks = rocks.filter((rk) => rk.y < camBottom + 40);
-    if (rocks.some((rk) => overlap(body, { x: rk.x, y: rk.y, w: rk.size, h: rk.size }))) die();
+    const parts = [body, handRect(hands[0]), handRect(hands[1])];
+    if (rocks.some((rk) => parts.some((p) => overlap(p, { x: rk.x, y: rk.y, w: rk.size, h: rk.size })))) die();
   }
 
   if (pile) {
@@ -352,12 +397,14 @@ function draw() {
     }
   }
 
-  // Climber: two hands on the hold, body hanging below, cosmetic feet
+  // Climber: two hands, arms to the shoulders, body hanging below the lower hand
   const c = climberRect();
-  gfx.fillRect(handPos.x - 7, handPos.y - 6, 5, 6);
-  gfx.fillRect(handPos.x + 2, handPos.y - 6, 5, 6);
-  gfx.fillRect(c.x + 4, c.y - 2, 2, 6);
-  gfx.fillRect(c.x + c.w - 6, c.y - 2, 2, 6);
+  const [lh, rh] = hands[0].x <= hands[1].x ? hands : [hands[1], hands[0]];
+  gfx.lineStyle(3, GRAY, 1);
+  gfx.lineBetween(lh.x, lh.y, c.x + 3, c.y + 8);
+  gfx.lineBetween(rh.x, rh.y, c.x + c.w - 3, c.y + 8);
+  gfx.fillRect(lh.x - 4, lh.y - 6, 8, 7);
+  gfx.fillRect(rh.x - 4, rh.y - 6, 8, 7);
   gfx.fillRect(c.x, c.y + 4, c.w, c.h - 4);
 
   // Falling rocks
