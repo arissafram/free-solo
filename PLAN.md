@@ -1,7 +1,7 @@
 # Free Solo — plan
 
 Chrome-dino-style climbing game. One flat gray, white bg, chunky pixels. Phone + desktop.
-Reuse setup from `../mikes-dildos` (Phaser, index.html/style.css, swipe + short-screen handling, tools/serve.py, og tags). Don't copy dino art/game logic.
+Reuse setup from `../mikes-dildos` (Phaser, index.html/style.css, swipe + short-screen handling, tools/serve.py). Don't copy dino art/game logic.
 
 ## Rules
 - Levels: each level is a wall of fixed height with a flag on the top hold. Touch it with both hands → LEVEL CLEAR → next, taller, harder wall (fewer holds, more/faster rocks).
@@ -18,4 +18,4 @@ _Pivot during phase 4 (user request): endless climb + crumble → levels, no cru
 2. **Tune** — spacing, gaps, fall speed, crumble speed, difficulty ramp. Constants at top of game.js.
 3. **Hands + reach** — two-hand rule, off-grid holds, slow long reaches.
 4. **Sprites** — text-grid sprites (like dino `tools/`), 2 frames each: hang, reach, fall; start poses, "hi", chalk puffs, burial pile.
-5. **Polish + share** — screen shake, sound, best score, og image, favicon, deploy. Done: shake + WebAudio blips, best level saved, `node tools/make_icons.js` builds favicon/apple-touch/og-image. Deploy is left to the user.
+5. **Polish** — screen shake, sound, best score, favicon. Done: shake + WebAudio blips, best level saved, `node tools/make_icons.js` builds favicon/apple-touch icon. Local only, no deploy.

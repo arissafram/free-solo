@@ -1,4 +1,4 @@
-// Builds favicon.ico, apple-touch-icon.png and og-image.png from the sprites in sprites.js.
+// Builds favicon.ico and apple-touch-icon.png from the sprites in sprites.js.
 //   node tools/make_icons.js
 const fs = require('fs');
 const path = require('path');
@@ -40,20 +40,6 @@ function climber(c, x, y, cell, hl, hr) {
   grid(c, S.HAND, hr.x - 2 * cell, hr.y - 2 * cell, cell);
 }
 
-// 5x7 pixel letters for the title
-const FONT = {
-  F: ['#####', '#....', '#....', '####.', '#....', '#....', '#....'],
-  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
-  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
-  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
-  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
-  ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....']
-};
-function text(c, str, x, y, cell) {
-  [...str].forEach((ch, i) => grid(c, FONT[ch], x + i * 6 * cell, y, cell));
-}
-
 // ---- favicon: climber hanging from two hands, 1 cell = 1px at 32 ----
 function icon(n, cell, pad, holds) {
   const c = canvas(n, n);
@@ -85,22 +71,4 @@ fs.writeFileSync(path.join(root, 'favicon.ico'), Buffer.concat([header, ...entri
 // ---- apple-touch-icon: same climber, 5px cells on 180 ----
 fs.writeFileSync(path.join(root, 'apple-touch-icon.png'), P.encode(icon(180, 5, 22)));
 
-// ---- og-image: title left, a slice of wall with the climber right ----
-const W = 1200, H = 630, og = canvas(W, H);
-text(og, 'FREE SOLO', 80, 230, 12);
-const cell = 6;
-const hold = (x, y) => grid(og, S.HOLD, x - 4 * cell, y - 2 * cell, cell);
-// Holds; the climber hangs from the middle pair
-const hl = { x: 830, y: 250 }, hr = { x: 950, y: 236 };
-[[860, 100], [1020, 80], hl, hr, [1100, 330], [760, 420], [1060, 520]]
-  .forEach((h) => (Array.isArray(h) ? hold(h[0], h[1]) : hold(h.x, h.y)));
-grid(og, S.FLAG, 1020 + 3 * cell, 80 - 2 * cell - S.FLAG.length * cell, cell);
-climber(og, 890 - 8 * cell, 243 + 126 - 9.5 * cell, cell, { x: hl.x, y: hl.y - 3 * cell }, { x: hr.x, y: hr.y - 3 * cell });
-// Rock falling and a "!" warning
-grid(og, S.ROCK, 1060, 130, cell);
-rect(og, 700, 40, 12, 44); rect(og, 700, 92, 12, 12);
-// Ground
-rect(og, 0, H - 30, W, 6);
-for (let x = 12; x < W; x += 74) rect(og, x, H - 18 + (x % 5), 8, 4);
-fs.writeFileSync(path.join(root, 'og-image.png'), P.encode(og));
-console.log('favicon.ico, apple-touch-icon.png, og-image.png');
+console.log('favicon.ico, apple-touch-icon.png');
