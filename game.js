@@ -1,27 +1,27 @@
-// Free Solo — climb each wall to the flag with both hands. Rocks fall; one hit and
-// you fall to the ground, game over. Sprites live in sprites.js.
+// Free Solo — an endless wall. Climb as high as you can; rocks fall faster and more
+// often the longer you last. One hit and you fall to the ground, game over.
+// Sprites live in sprites.js.
 // World y grows downward; the ground is y = 0 and the wall goes up into negative y.
+// World x: the wall runs from 0 to COLS * COL_W; the camera follows the climber sideways.
 
 // ---- Board size (not gameplay) ----
-const MAX_WIDTH = 480;
-const MAX_HEIGHT = 720;
 const MIN_HEIGHT = 360;
-const PAGE_PADDING = 32;       // 16px above + 16px below the board
 const SWIPE_PX = 24;           // finger travel that counts as a swipe
 
 // ---- Gameplay tuning: every gameplay number lives here ----
-// Ranged knobs are [level 1, hardest level]. Difficulty d goes 0 -> 1 from level 1
-// to level LEVELS_TO_HARDEST, then stays at 1.
-const LEVELS_TO_HARDEST = 8;
-const LEVEL_ROWS = 10;         // rows of holds to the flag on level 1...
-const LEVEL_ROWS_PER_LEVEL = 3;// ...plus this many per level after
-const CLEAR_MS = 1400;         // pause on "LEVEL CLEAR" before the next wall
+// Ranged knobs are [start, hardest]. Difficulty d goes 0 -> 1 over RAMP_MS of
+// climbing (from the first move), then stays at 1.
+const RAMP_MS = 90000;
 
 // Wall
-const COLS = 5;                // hold columns
+const COLS = 9;                // hold columns: the wall is wider than a phone, capped on desktop
+const COL_W = 90;              // px per column
+const WALL_EDGE = 24;          // px of bare wall past the outer columns before the camera stops
 const ROW_GAP = 70;            // px between hold rows
 const ROW0_Y = -92;            // lowest hold row (start hold)
-const JITTER_X = 22;           // px holds are nudged off the grid sideways...
+const ROWS_AHEAD = 4;          // build holds this many rows above the top of the screen
+const CAM_DEADZONE = 0.2;      // camera slides sideways once the climber is this far off screen centre (fraction of width)
+const JITTER_X = 12;           // px holds are nudged off the grid sideways...
 const JITTER_Y = 18;           // ...and up/down, so reach distances vary
 const EXTRA_HOLDS = [0.6, 0.25];// chance of a hold in each non-route column (rest are gaps)
 
@@ -38,7 +38,7 @@ const CLIMBER_FOCUS = 0.62;    // climber's hands sit this far down the screen
 const FALL_GRAVITY = 1800;     // px/s² when knocked off
 
 // Falling rocks
-const GRACE_MS = 2000;         // no rocks for this long after the first move of a level
+const GRACE_MS = 2000;         // no rocks for this long after the first move
 const SPAWN_MS = [2000, 700];  // time between "!" warnings
 const WARN_MS = [1100, 550];   // "!" shows this long before the rock drops
 const ROCK_SPEED = [300, 600]; // px/s fall speed
@@ -56,10 +56,9 @@ const FONT = 'monospace';
 const lerp = (range, d) => range[0] + (range[1] - range[0]) * d;
 const snap = (v) => Math.round(v / CELL) * CELL;
 
-const containerWidth = () =>
-  Math.min(MAX_WIDTH, Math.floor(document.getElementById('game-container').clientWidth) || MAX_WIDTH);
-const boardHeight = () =>
-  Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, Math.floor(window.innerHeight - PAGE_PADDING)));
+// The board fills the window
+const containerWidth = () => Math.floor(window.innerWidth);
+const boardHeight = () => Math.max(MIN_HEIGHT, Math.floor(window.innerHeight));
 let WIDTH = containerWidth();
 let HEIGHT = boardHeight();
 document.getElementById('game-container').style.height = HEIGHT + 'px';
@@ -86,26 +85,27 @@ window.addEventListener('resize', () => {
     document.getElementById('game-container').style.height = HEIGHT + 'px';
     game.scale.resize(WIDTH, HEIGHT);
     if (scene) layoutHud();
-    if (hands && !moving) hands.forEach((h) => Object.assign(h, holdXY(h.r, h.i)));
   }
 });
 
 // ---- State ----
-// phase: 'ready' (start pose, waiting for first move) | 'climbing' | 'clear' |
+// phase: 'ready' (start pose, waiting for first move) | 'climbing' |
 //        'falling' (knocked off) | 'over' (landed, game over)
-let scene, gfx, hudText, bestText, overText;
-let phase, level, rows, topRow, pathCol, prevRoute;
+let scene, gfx, hudText, overText;
+let phase, rows, pathCol, prevRoute;
+let height;        // score: highest row either hand has reached (1 row = 1m)
+let elapsed;       // ms climbed since the first move (drives difficulty)
 let hands;         // two hands: { r, i, x, y } (hold + drawn position, tweened between holds)
 let handPos;       // { x, y }: midpoint of the two hands — where the body hangs from
 let lastMoved, moving, queued, pose;
-let camY, spawnTimer, warnings, rocks, puffs, canRestart;
+let camX, camY, spawnTimer, warnings, rocks, puffs, canRestart;
 let fall;          // { x, shoulderY, vy } while falling / over
 let best = 0;
-try { best = Number(localStorage.getItem('freesolo-best-level')) || 0; } catch (e) {}
+try { best = Number(localStorage.getItem('freesolo-best-m')) || 0; } catch (e) {}
 function saveBest() {
-  if (level <= best) return false;
-  best = level;
-  try { localStorage.setItem('freesolo-best-level', String(best)); } catch (e) {}
+  if (height <= best) return false;
+  best = height;
+  try { localStorage.setItem('freesolo-best-m', String(best)); } catch (e) {}
   return true;
 }
 
@@ -137,19 +137,20 @@ const SFX = {
   grab: () => blip([[880, 660, 0, 0.05]], 'square', 0.6),
   longReach: () => blip([[220, 520, 0, 0.22]], 'triangle', 1.2),
   warn: () => blip([[1320, 1320, 0, 0.05], [1320, 1320, 0.1, 0.05]], 'square', 0.5),
-  hit: () => blip([[400, 60, 0, 0.35], [180, 40, 0, 0.3]], 'sawtooth', 1),
-  clear: () => blip([[523, 523, 0, 0.09], [659, 659, 0.09, 0.09], [784, 784, 0.18, 0.09], [1047, 1047, 0.27, 0.22]], 'square', 0.7)
+  hit: () => blip([[400, 60, 0, 0.35], [180, 40, 0, 0.3]], 'sawtooth', 1)
 };
 
-const difficulty = () => Phaser.Math.Clamp((level - 1) / (LEVELS_TO_HARDEST - 1), 0, 1);
-const colX = (col) => 28 + (col + 0.5) * (WIDTH - 56) / COLS;
+const WALL_W = COLS * COL_W;
+const difficulty = () => Phaser.Math.Clamp(elapsed / RAMP_MS, 0, 1);
+const colX = (col) => (col + 0.5) * COL_W;
+const colOf = (x) => Phaser.Math.Clamp(Math.floor(x / COL_W), 0, COLS - 1);
 const rowY = (r) => ROW0_Y - r * ROW_GAP;
 const holdXY = (r, i) => {
   const h = rows[r][i];
   return { x: colX(h.col) + h.jx, y: rowY(r) + h.jy };
 };
 
-// ---- Level building ----
+// ---- Wall building: rows are added as the camera climbs ----
 function makeRow(r) {
   if (r === 0) {
     pathCol = Math.floor(COLS / 2);
@@ -159,15 +160,13 @@ function makeRow(r) {
   pathCol = Phaser.Math.Clamp(pathCol + Phaser.Math.Between(-1, 1), 0, COLS - 1);
   const row = [];
   for (let c = 0; c < COLS; c++) {
-    const isTop = r === topRow;
-    if (c === pathCol || (!isTop && Math.random() < lerp(EXTRA_HOLDS, difficulty()))) {
+    if (c === pathCol || Math.random() < lerp(EXTRA_HOLDS, difficulty())) {
       const h = { col: c, jx: Phaser.Math.Between(-JITTER_X, JITTER_X), jy: Phaser.Math.Between(-JITTER_Y, JITTER_Y) };
       if (c === pathCol) {
-        // Keep the route climbable on the widest board: pull the hold back onto the grid if it's out of span
-        const gap = (a, b) => Math.hypot((b.col - a.col) * (MAX_WIDTH - 56) / COLS + b.jx - a.jx, (a.r - b.r) * ROW_GAP + b.jy - a.jy);
+        // Keep the route climbable: pull the hold back onto the grid if it's out of span
+        const gap = (a, b) => Math.hypot((b.col - a.col) * COL_W + b.jx - a.jx, (a.r - b.r) * ROW_GAP + b.jy - a.jy);
         if (gap(prevRoute, { r, ...h }) > MAX_SPAN - 4) { h.jx = 0; h.jy = 0; }
         prevRoute = { r, ...h };
-        if (isTop) h.top = true;
       }
       row.push(h);
     }
@@ -175,10 +174,14 @@ function makeRow(r) {
   return row;
 }
 
-function buildLevel() {
-  topRow = LEVEL_ROWS + LEVEL_ROWS_PER_LEVEL * (level - 1);
-  rows = [];
-  for (let r = 0; r <= topRow; r++) rows.push(makeRow(r));
+function extendWall() {
+  while (rowY(rows.length - 1) > camY - ROWS_AHEAD * ROW_GAP) rows.push(makeRow(rows.length));
+}
+
+function newGame() {
+  canRestart = false;
+  height = 0; elapsed = 0;
+  rows = [makeRow(0)];
   const start = holdXY(0, 0);
   hands = [{ r: 0, i: 0, x: start.x, y: start.y }, { r: 0, i: 0, x: start.x, y: start.y }];
   handPos = { x: 0, y: 0 };
@@ -189,15 +192,11 @@ function buildLevel() {
   phase = 'ready';
   if (warnings) warnings.forEach((w) => w.text.destroy());
   spawnTimer = GRACE_MS; warnings = []; rocks = []; puffs = []; fall = null;
+  camX = targetCamX(handPos.x - WIDTH / 2);
   camY = targetCamY();
-  scene.cameras.main.scrollY = camY;
-  overText.setText(`LEVEL ${level}`);
-}
-
-function newGame() {
-  level = 1;
-  canRestart = false;
-  buildLevel();
+  scene.cameras.main.setScroll(Math.round(camX), Math.round(camY));
+  extendWall();
+  overText.setText('');
 }
 
 // ---- Moving ----
@@ -221,9 +220,8 @@ function findTarget(k, dir) {
   const from = holdXY(h.r, h.i), anchor = holdXY(o.r, o.i);
   const [vx, vy] = DIRS[dir];
   let best = null, bestScore = Infinity;
-  rows.forEach((row, r) => {
-    if (Math.abs(r - h.r) > 4) return;
-    row.forEach((_, i) => {
+  for (let r = Math.max(0, h.r - 4); r <= Math.min(rows.length - 1, h.r + 4); r++) {
+    rows[r].forEach((_, i) => {
       if (r === h.r && i === h.i) return;
       const p = holdXY(r, i);
       const dx = p.x - from.x, dy = p.y - from.y;
@@ -235,7 +233,7 @@ function findTarget(k, dir) {
       const score = fwd + side * 1.5;  // nearest hold, favouring straight lines
       if (score < bestScore) { bestScore = score; best = { r, i }; }
     });
-  });
+  }
   return best;
 }
 
@@ -265,7 +263,7 @@ function tryMove(dir) {
       if (phase !== 'climbing') return;
       addPuff(h.x, h.y - 6);
       SFX.grab();
-      if (hands.every((hh) => rows[hh.r][hh.i].top)) return levelClear();
+      height = Math.max(height, h.r);
       if (queued) { const q = queued; queued = null; tryMove(q); }
     }
   });
@@ -274,18 +272,6 @@ function tryMove(dir) {
 function updateHandPos() {
   handPos.x = (hands[0].x + hands[1].x) / 2;
   handPos.y = (hands[0].y + hands[1].y) / 2;
-}
-
-function levelClear() {
-  phase = 'clear';
-  queued = null;
-  warnings.forEach((w) => w.text.destroy());
-  warnings = []; rocks = [];
-  saveBest();
-  SFX.clear();
-  for (let n = 0; n < 4; n++) addPuff(handPos.x + Phaser.Math.Between(-20, 20), handPos.y + Phaser.Math.Between(-20, 10), n * 120);
-  overText.setText(`LEVEL ${level} CLEAR`);
-  scene.time.delayedCall(CLEAR_MS, () => { level++; buildLevel(); });
 }
 
 // ---- Climber geometry ----
@@ -309,18 +295,33 @@ const handRect = (h) => ({ x: h.x - 6, y: h.y - 6, w: 12, h: 8 });
 const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
 function targetCamY() {
-  // Follow the hands (or the falling body); stop at the flag and at the ground
+  // Follow the hands (or the falling body); stop at the ground
   const y = fall ? fall.shoulderY : handPos.y;
-  return Phaser.Math.Clamp(y - HEIGHT * CLIMBER_FOCUS, rowY(topRow) - 80, 40 - HEIGHT);
+  return Math.min(y - HEIGHT * CLIMBER_FOCUS, 40 - HEIGHT);
+}
+
+function targetCamX(from) {
+  // Leave the camera alone while the climber is near screen centre; slide it once he
+  // drifts CAM_DEADZONE off centre. Stop just past the wall's edges, or centre the
+  // wall when the window is wider than it.
+  const lo = -WALL_EDGE, hi = WALL_W + WALL_EDGE - WIDTH;
+  if (hi <= lo) return (WALL_W - WIDTH) / 2;
+  const x = fall ? fall.x : handPos.x;
+  const slack = WIDTH * CAM_DEADZONE;
+  const centred = x - WIDTH / 2;
+  const next = Phaser.Math.Clamp(from, centred - slack, centred + slack);
+  return Phaser.Math.Clamp(next, lo, hi);
 }
 
 // ---- Hazards ----
 function spawnWarning() {
   const d = difficulty();
-  const myCol = Phaser.Math.Clamp(Math.round((handPos.x - 28) / ((WIDTH - 56) / COLS) - 0.5), 0, COLS - 1);
-  const col = Math.random() < lerp(AIM_CHANCE, d) ? myCol : Phaser.Math.Between(0, COLS - 1);
+  // Only columns you can see drop rocks
+  const first = colOf(camX + COL_W * 0.3), last = colOf(camX + WIDTH - COL_W * 0.3);
+  const myCol = colOf(handPos.x);
+  const col = Math.random() < lerp(AIM_CHANCE, d) ? myCol : Phaser.Math.Between(first, last);
   const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
-    .setOrigin(0.5, 0).setScrollFactor(0).setDepth(10);
+    .setOrigin(0.5, 0).setScrollFactor(1, 0).setDepth(10);
   warnings.push({ col, t: lerp(WARN_MS, d), text });
   SFX.warn();
 }
@@ -341,8 +342,8 @@ function knockOff() {
 function gameOver() {
   phase = 'over';
   rocks = [];
-  const isBest = saveBest() && level > 1;
-  overText.setText(`GAME OVER\n\nlevel ${level}${isBest ? ' - new best!' : ''}\n\ntap to climb again`);
+  const isBest = saveBest() && height > 0;
+  overText.setText(`GAME OVER\n\n${height}m${isBest ? ' - new best!' : ''}\n\ntap to climb again`);
   scene.time.delayedCall(400, () => { canRestart = true; });
 }
 
@@ -355,8 +356,8 @@ function create() {
   scene = this;
   gfx = this.add.graphics();
   const style = { fontFamily: FONT, fontSize: '16px', color: GRAY_CSS };
-  hudText = this.add.text(0, 12, '', style).setScrollFactor(0).setOrigin(1, 0).setDepth(10);
-  bestText = this.add.text(0, 32, '', style).setScrollFactor(0).setOrigin(1, 0).setDepth(10);
+  hudText = this.add.text(0, 12, '', { ...style, backgroundColor: '#ffffff', padding: { x: 4, y: 2 } })
+    .setScrollFactor(0).setOrigin(1, 0).setDepth(10);
   overText = this.add.text(0, 0, '', { ...style, fontSize: '20px', align: 'center', backgroundColor: '#ffffff', padding: { x: 8, y: 6 } })
     .setScrollFactor(0).setOrigin(0.5).setDepth(10);
   layoutHud();
@@ -365,7 +366,6 @@ function create() {
 
 function layoutHud() {
   hudText.setX(WIDTH - 12);
-  bestText.setX(WIDTH - 12);
   overText.setPosition(WIDTH / 2, HEIGHT * 0.3);
 }
 
@@ -374,11 +374,14 @@ function update(time, deltaMs) {
   if (!fall) updateHandPos();
 
   camY += (targetCamY() - camY) * Math.min(1, dt * 6);
-  scene.cameras.main.scrollY = Math.round(camY);
+  camX += (targetCamX(camX) - camX) * Math.min(1, dt * 6);
+  scene.cameras.main.setScroll(Math.round(camX), Math.round(camY));
+  extendWall();
   const camBottom = camY + HEIGHT;
   const d = difficulty();
 
   if (phase === 'climbing') {
+    elapsed += deltaMs;
     spawnTimer -= deltaMs;
     if (spawnTimer <= 0) { spawnTimer = lerp(SPAWN_MS, d); spawnWarning(); }
     warnings = warnings.filter((w) => {
@@ -420,8 +423,7 @@ function update(time, deltaMs) {
   puffs.forEach((p) => { p.t += deltaMs; });
   puffs = puffs.filter((p) => p.t < 500);
 
-  hudText.setText(`level ${level}`);
-  bestText.setText(best ? `best ${best}` : '');
+  hudText.setText(`${best ? `HI ${best}m  ` : ''}${height}m`);
   draw(time);
 }
 
@@ -507,21 +509,27 @@ function draw(time) {
   gfx.clear();
   const top = camY - 10, bottom = camY + HEIGHT + 10;
 
-  // Ground
+  // Ground, across the whole view
+  const left = Math.floor(camX) - 40, right = Math.ceil(camX + WIDTH) + 40;
   gfx.fillStyle(GRAY, 1);
-  gfx.fillRect(0, 0, WIDTH, 3);
-  for (let x = 6; x < WIDTH; x += 37) gfx.fillRect(x, 6 + (x % 5), 4, 2);
+  gfx.fillRect(left, 0, right - left, 3);
+  for (let x = left - (((left % 37) + 37) % 37) + 6; x < right; x += 37) gfx.fillRect(x, 6 + (((x % 5) + 5) % 5), 4, 2);
 
-  // Holds, with a flag on the top one
-  rows.forEach((row, r) => {
+  // Wall edges: dashed lines where the wall ends
+  for (const ex of [-WALL_EDGE, WALL_W + WALL_EDGE - 2]) {
+    if (ex < left || ex > right) continue;
+    for (let y = Math.floor(top / 16) * 16; y < Math.min(bottom, 0); y += 16) gfx.fillRect(ex, y, 2, 8);
+  }
+
+  // Holds
+  for (let r = 0; r < rows.length; r++) {
     const y0 = rowY(r);
-    if (y0 < top - 40 || y0 > bottom + 20) return;
-    row.forEach((h, i) => {
+    if (y0 < top - 40 || y0 > bottom + 20) continue;
+    rows[r].forEach((h, i) => {
       const p = holdXY(r, i);
       drawGrid(HOLD, p.x - 8, p.y - 4);
-      if (h.top) drawGrid(FLAG, p.x + 6, p.y - 4 - FLAG.length * CELL);
     });
-  });
+  }
 
   drawClimber(time);
 

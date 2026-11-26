@@ -29,7 +29,6 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding-top: 16px;
 }
 
 .frame {
@@ -37,9 +36,9 @@ body {
 }
 
 #game-container {
-  /* Width shrinks on small screens; height is set by game.js to fit the window */
-  width: min(480px, calc(100vw - 32px));
-  height: 640px;
+  /* Fills the window; game.js sets the height to match */
+  width: 100vw;
+  height: 100vh;
 }
 
 #game-container canvas {
