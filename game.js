@@ -1,5 +1,5 @@
 // Free Solo — climb each wall to the flag with both hands. Rocks fall; one hit and
-// you fall to the ground, get buried, game over. Sprites live in sprites.js.
+// you fall to the ground, game over. Sprites live in sprites.js.
 // World y grows downward; the ground is y = 0 and the wall goes up into negative y.
 
 // ---- Board size (not gameplay) ----
@@ -87,14 +87,14 @@ window.addEventListener('resize', () => {
 
 // ---- State ----
 // phase: 'ready' (start pose, waiting for first move) | 'climbing' | 'clear' |
-//        'falling' (knocked off) | 'buried' (game over)
+//        'falling' (knocked off) | 'over' (landed, game over)
 let scene, gfx, hudText, bestText, overText;
 let phase, level, rows, topRow, pathCol, prevRoute;
 let hands;         // two hands: { r, i, x, y } (hold + drawn position, tweened between holds)
 let handPos;       // { x, y }: midpoint of the two hands — where the body hangs from
 let lastMoved, moving, queued, pose;
-let camY, spawnTimer, warnings, rocks, pile, puffs, canRestart;
-let fall;          // { x, shoulderY, vy } while falling / buried
+let camY, spawnTimer, warnings, rocks, puffs, canRestart;
+let fall;          // { x, shoulderY, vy } while falling / over
 let best = 0;
 try { best = Number(localStorage.getItem('freesolo-best-level')) || 0; } catch (e) {}
 
@@ -145,7 +145,7 @@ function buildLevel() {
   pose = Phaser.Utils.Array.GetRandom(POSES);
   phase = 'ready';
   if (warnings) warnings.forEach((w) => w.text.destroy());
-  spawnTimer = GRACE_MS; warnings = []; rocks = []; puffs = []; pile = null; fall = null;
+  spawnTimer = GRACE_MS; warnings = []; rocks = []; puffs = []; fall = null;
   camY = targetCamY();
   scene.cameras.main.scrollY = camY;
   overText.setText(`LEVEL ${level}`);
@@ -292,23 +292,9 @@ function knockOff() {
   fall = { x: handPos.x, shoulderY: b.top + 8 * CELL, vy: -120 };
 }
 
-function bury() {
-  phase = 'buried';
-  rocks = [];
-  // A mound of rocks drops onto him on the ground, one hand left sticking out
-  const targets = [];
-  const layers = 4, size = 8 * CELL;
-  for (let l = 0; l < layers; l++) {
-    const n = layers - l + 2;
-    for (let k = 0; k < n; k++) {
-      const x = fall.x + (k - (n - 1) / 2) * size + Phaser.Math.Between(-3, 3);
-      targets.push({ x: snap(x), y: -(l + 1) * (size - 2) });
-    }
-  }
-  pile = targets.map((t, idx) => ({ ...t, cy: camY - 30 - idx * 26, landed: false }));
-}
-
 function gameOver() {
+  phase = 'over';
+  rocks = [];
   overText.setText(`GAME OVER\n\nlevel ${level}\n\ntap to climb again`);
   scene.time.delayedCall(400, () => { canRestart = true; });
 }
@@ -375,18 +361,8 @@ function update(time, deltaMs) {
     if (fall.shoulderY >= landed) {
       fall.shoulderY = landed;
       for (let n = 0; n < 3; n++) addPuff(fall.x + Phaser.Math.Between(-20, 20), -6, n * 80);
-      bury();
+      gameOver();
     }
-  }
-
-  if (pile) {
-    let allLanded = true;
-    pile.forEach((p) => {
-      if (p.landed) return;
-      p.cy = Math.min(p.y, p.cy + ROCK_SPEED[1] * 1.2 * dt);
-      if (p.cy >= p.y) p.landed = true; else allLanded = false;
-    });
-    if (allLanded && !overText.text) gameOver();
   }
 
   // Chalking pose keeps puffing
@@ -500,20 +476,10 @@ function draw(time) {
     });
   });
 
-  if (!pile || !pile.every((p) => p.landed)) drawClimber(time);
+  drawClimber(time);
 
   // Falling rocks
   rocks.forEach((rk) => drawGrid(ROCK, rk.x, rk.y, rk.cell));
-
-  // Burial pile, plus the hand sticking out
-  if (pile) {
-    const landed = pile.every((p) => p.landed);
-    if (landed) {
-      const topY = Math.min(...pile.map((p) => p.y));
-      drawGrid(BURIED_HAND, fall.x - 6, topY - BURIED_HAND.length * CELL + 4);
-    }
-    pile.forEach((p) => drawGrid(ROCK, p.x - 8, p.cy));
-  }
 
   // Chalk puffs
   puffs.forEach((p) => {
@@ -523,12 +489,12 @@ function draw(time) {
 }
 
 // ---- Input: arrows, swipes, taps ----
-const restartIfOver = () => { if (phase === 'buried' && canRestart) newGame(); };
+const restartIfOver = () => { if (phase === 'over' && canRestart) newGame(); };
 const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 window.addEventListener('keydown', (e) => {
   if (KEYS[e.key]) {
     e.preventDefault();
-    if (phase === 'buried') restartIfOver(); else tryMove(KEYS[e.key]);
+    if (phase === 'over') restartIfOver(); else tryMove(KEYS[e.key]);
   } else if (e.key === ' ' || e.key === 'Enter') {
     e.preventDefault();
     restartIfOver();

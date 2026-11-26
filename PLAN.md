@@ -9,7 +9,7 @@ Reuse setup from `../mikes-dildos` (Phaser, index.html/style.css, swipe + short-
 - Start: on the ground, both hands on lowest hold, random pose (sit start, drop knee, flag, heel hook, chalking, staring up, stretching), says "hi". No title. First swipe starts.
 - Move: swipe / arrow keys = move one hand to the next hold in that direction (up/down/left/right). Only onto real holds. Hands share one hold or sit on adjacent holds, never further. Long reaches take longer. Feet are cosmetic.
 - Hazards: "!" flashes atop a column, then rock/pigeon/phone drops down it. The floor does not rise (no crumble).
-- Lose: hit by a rock → he falls to the ground, rocks bury him (hand sticks out), "GAME OVER", level reached, tap to climb again from level 1.
+- Lose: hit by a rock → he falls to the ground, "GAME OVER", level reached, tap to climb again from level 1.
 - Score: level reached. Save best level.
 
 ## Phases (one session each)
