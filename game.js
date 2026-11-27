@@ -53,6 +53,7 @@ const GRAY = 0x535353;
 const SHIRT = 0x1f2d5c;         // navy
 const PANTS = 0x3b6fd4;         // blue
 const ROCK_FLASH = 0xe0533d;    // warning rock flashes between this and gray
+const RESET_PAD = 12;            // reset button's distance from the top-left corner
 const WARN_TOP = 10;             // px below the top edge where warning rocks wait
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
@@ -119,7 +120,7 @@ export function createGame(Phaser, container, options = {}) {
   // ---- State ----
   // phase: 'ready' (start pose, waiting for first move) | 'climbing' |
   //        'falling' (knocked off) | 'over' (landed, game over)
-  let scene, gfx, hudText, overText, overBtn;
+  let scene, gfx, hudText, overText, overBtn, resetBtn;
   let phase, rows, pathCol, prevRoute;
   let height;        // score: highest row either hand has reached (1 row = 1m)
   let elapsed;       // ms climbed since the first move (drives difficulty)
@@ -391,6 +392,8 @@ export function createGame(Phaser, container, options = {}) {
     overText = this.add.image(0, 0, 'gameover-text').setScrollFactor(0).setDepth(10).setVisible(false);
     overBtn = this.add.image(0, 0, 'restart-btn').setScrollFactor(0).setDepth(10).setVisible(false)
       .setInteractive({ useHandCursor: true });
+    // Always-on reset button, top left
+    resetBtn = this.add.image(RESET_PAD, RESET_PAD, 'restart-btn').setOrigin(0, 0).setScrollFactor(0).setDepth(10);
     layoutHud();
     newGame();
   }
@@ -571,18 +574,30 @@ export function createGame(Phaser, container, options = {}) {
     if (KEYS[e.key]) {
       e.preventDefault();
       if (phase === 'over') restartIfOver(); else tryMove(KEYS[e.key]);
+    } else if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      newGame();
     } else if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault();
       restartIfOver();
     }
   });
 
+  // Is this pointer on the top-left reset button? (in game px)
+  const onResetBtn = (e) => {
+    if (!resetBtn) return false;
+    const r = scene.game.canvas.getBoundingClientRect();
+    const x = (e.clientX - r.left) * (WIDTH / r.width);
+    const y = (e.clientY - r.top) * (HEIGHT / r.height);
+    const slop = 8;  // a little extra so it's easy to hit with a finger
+    return x <= RESET_PAD + resetBtn.width + slop && y <= RESET_PAD + resetBtn.height + slop;
+  };
   let swipeStart = null;
   on(container, 'pointerdown', (e) => {
     if (!e.isPrimary) return;
     if (keyMode === 'focus') container.focus({ preventScroll: true });
     try { container.setPointerCapture(e.pointerId); } catch (err) {}  // keep the swipe if the finger leaves the box
-    swipeStart = { x: e.clientX, y: e.clientY, used: false };
+    swipeStart = { x: e.clientX, y: e.clientY, used: false, reset: onResetBtn(e) };
   });
   on(container, 'pointermove', (e) => {
     if (!swipeStart || swipeStart.used || !e.isPrimary) return;
@@ -593,9 +608,10 @@ export function createGame(Phaser, container, options = {}) {
   });
   on(container, 'pointerup', () => {
     if (!swipeStart) return;
-    const wasTap = !swipeStart.used;
+    const wasTap = !swipeStart.used, reset = swipeStart.reset;
     swipeStart = null;
-    if (wasTap) restartIfOver();
+    if (wasTap && reset) newGame();
+    else if (wasTap) restartIfOver();
   });
   on(container, 'pointercancel', () => { swipeStart = null; });
   // Belt and braces for iOS: no page scroll / pull-to-refresh while swiping on the game
