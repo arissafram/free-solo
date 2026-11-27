@@ -36,9 +36,11 @@ body {
 }
 
 #game-container {
-  /* Fills the window; game.js sets the height to match */
+  /* Fills the window; the game follows this box's size */
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
+  min-height: 360px;
 }
 
 #game-container canvas {

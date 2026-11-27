@@ -92,13 +92,6 @@ const LEGS = {
     '.###........###.',
     '.##..........##.'
   ],
-  sit: [
-    '...##########...',
-    '..############..',
-    '.###.######.###.',
-    '###..######..###',
-    '##...######...##'
-  ],
   dropKnee: [
     '....########....',
     '....###..###....',
@@ -142,6 +135,25 @@ const LEGS = {
     '.........#####..'
   ] }
 };
+// Sit-start legs, side profile, played for laughs: butt on the ground out from
+// under the hands, knees bent up, feet flat. Drawn over the body from row `at`.
+const SIT_LEGS = { at: 8, rows: [
+  '..............................',
+  '..............................',
+  '..............................',
+  '..................##..........',
+  '.................####.........',
+  '...............######.........',
+  '..............####..#.........',
+  '.............#####..##........',
+  '...........####..#..##........',
+  '..........####...##..##.......',
+  '....#########....##..##.......',
+  '...##########.....#...#.......',
+  '...##########.....##..##......',
+  '...#########......##..##......',
+  '....#######......####.####....'
+] };
 LEGS.reachB = LEGS.reachA.map((r) => r.split('').reverse().join(''));
 
 const mirror = (rows) => rows.map((r) => r.split('').reverse().join(''));
@@ -172,7 +184,7 @@ const BODY = {
 // Start poses. arm: which hand leaves the hold and where it goes ('bag' or 'stretch').
 // sit: the body sits on the ground instead of hanging.
 const POSES = [
-  { name: 'sit start', grid: body(LEGS.sit), sit: true },
+  { name: 'sit start', grid: body([]), sit: true, legs: SIT_LEGS },
   { name: 'drop knee', grid: body(LEGS.dropKnee) },
   { name: 'flag', grid: body(LEGS.flag) },
   { name: 'heel hook', grid: body(LEGS.heelHook) },
@@ -217,3 +229,5 @@ const FLAG = [ // marks the top hold of each level
   '#......',
   '#......'
 ];
+
+export { CELL, POSES, BODY, HAND, HOLD, ROCK, PUFF, FLAG };
