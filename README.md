@@ -68,4 +68,4 @@ python3 tools/serve.py   # http://127.0.0.1:8767/ (full-page game) and /demo.htm
 - `game.js` holds the game (`createGame(Phaser, container, options)`), and `sprites.js` holds the pixel sprites.
 - `index.html` loads those directly with the vendored `vendor/phaser.min.js`, so the full-page game needs no build step.
 - `src/index.js` is the npm entry. It provides `mount` and `<free-solo>`.
-- `npm pack` builds first (`prepack`) and ships only `dist/`, `types/`, the README and `package.json`.
+- `npm pack` and installs from GitHub build first (`prepare`), and ship only `dist/`, `types/`, the README and `package.json`.

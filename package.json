@@ -30,7 +30,7 @@
   "scripts": {
     "build": "esbuild src/index.js --bundle --format=esm --minify --target=es2019 --outfile=dist/free-solo.js --log-override:duplicate-object-key=silent --banner:js=\"/*! Free Solo. Bundles Phaser 3.80.1 (MIT License, (c) Richard Davey, Photon Storm Ltd.) */\"",
     "watch": "npm run build -- --watch",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "esbuild": "^0.24.2"
