@@ -41,17 +41,19 @@ const FALL_GRAVITY = 1800;     // px/s² when knocked off
 
 // Falling rocks
 const GRACE_MS = 2000;         // no rocks for this long after the first move
-const SPAWN_MS = [2000, 700, 350];  // time between "!" warnings
-const WARN_MS = [1100, 550, 400];   // "!" shows this long before the rock drops
+const SPAWN_MS = [2000, 700, 350];  // time between rock warnings
+const WARN_MS = [1100, 550, 400];   // a rock flashes at the top this long before it drops
 const ROCK_SPEED = [300, 600, 900]; // px/s fall speed
 const ROCK_CELL = [2, 4];      // rock pixel size (rock is 8x8 cells: 16px to 32px)
 const AIM_CHANCE = [0.3, 0.7, 0.85]; // chance a rock targets the climber's column (else random)
 
 // Juice
-const SHAKE_MS = 300;          // screen shake when a rock hits...
-const SHAKE_AMT = 0.02;        // ...this strong (fraction of the board)
 
 const GRAY = 0x535353;
+const SHIRT = 0x1f2d5c;         // navy
+const PANTS = 0x3b6fd4;         // blue
+const ROCK_FLASH = 0xe0533d;    // warning rock flashes between this and gray
+const WARN_TOP = 10;             // px below the top edge where warning rocks wait
 const GRAY_CSS = '#535353';
 const FONT = 'monospace';
 const lerp = (range, d) => {
@@ -117,7 +119,7 @@ export function createGame(Phaser, container, options = {}) {
   // ---- State ----
   // phase: 'ready' (start pose, waiting for first move) | 'climbing' |
   //        'falling' (knocked off) | 'over' (landed, game over)
-  let scene, gfx, hudText, overText;
+  let scene, gfx, hudText, overText, overBtn;
   let phase, rows, pathCol, prevRoute;
   let height;        // score: highest row either hand has reached (1 row = 1m)
   let elapsed;       // ms climbed since the first move (drives difficulty)
@@ -188,13 +190,12 @@ export function createGame(Phaser, container, options = {}) {
     moving = false; queued = null;
     pose = POSES.find((p) => p.name === 'sit start');  // always sit start, both hands on the start hold
     phase = 'ready';
-    if (warnings) warnings.forEach((w) => w.text.destroy());
     spawnTimer = GRACE_MS; warnings = []; rocks = []; puffs = []; fall = null;
     camX = targetCamX(handPos.x - WIDTH / 2);
     camY = targetCamY();
     scene.cameras.main.setScroll(Math.round(camX), Math.round(camY));
     extendWall();
-    overText.setText('');
+    overText.setVisible(false); overBtn.setVisible(false);
   }
 
   // ---- Moving ----
@@ -238,7 +239,7 @@ export function createGame(Phaser, container, options = {}) {
   function tryMove(dir) {
     if (phase !== 'ready' && phase !== 'climbing') return;
     if (moving) { queued = dir; return; }
-    if (phase === 'ready') { phase = 'climbing'; overText.setText(''); }
+    if (phase === 'ready') phase = 'climbing';
     let k = pickHand(dir);
     let next = findTarget(k, dir);
     if (!next) { k = 1 - k; next = findTarget(k, dir); }
@@ -314,9 +315,8 @@ export function createGame(Phaser, container, options = {}) {
     const first = colOf(camX + COL_W * 0.3), last = colOf(camX + WIDTH - COL_W * 0.3);
     const myCol = colOf(handPos.x);
     const col = Math.random() < lerp(AIM_CHANCE, d) ? myCol : Phaser.Math.Between(first, last);
-    const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
-      .setOrigin(0.5, 0).setScrollFactor(1, 0).setDepth(10);
-    warnings.push({ col, t: lerp(WARN_MS, d), text });
+    const cell = Phaser.Math.Between(ROCK_CELL[0], Math.round(lerp(ROCK_CELL, d)));
+    warnings.push({ col, t: lerp(WARN_MS, d), cell });
   }
 
   function knockOff() {
@@ -324,9 +324,7 @@ export function createGame(Phaser, container, options = {}) {
     queued = null;
     scene.tweens.killTweensOf(hands);
     moving = false;
-    warnings.forEach((w) => w.text.destroy());
     warnings = [];
-    scene.cameras.main.shake(SHAKE_MS, SHAKE_AMT);
     const b = bodyFrame();
     fall = { x: handPos.x, shoulderY: b.top + 8 * CELL, vy: -120 };
   }
@@ -334,13 +332,51 @@ export function createGame(Phaser, container, options = {}) {
   function gameOver() {
     phase = 'over';
     rocks = [];
-    const isBest = saveBest() && height > 0;
-    overText.setText(`GAME OVER\n\n${height}m${isBest ? ' - new best!' : ''}\n\ntap to climb again`);
+    saveBest();
+    overText.setVisible(true); overBtn.setVisible(true);
     scene.time.delayedCall(400, () => { canRestart = true; });
   }
 
   function addPuff(x, y, delay = 0) {
     puffs.push({ x, y, t: -delay });
+  }
+
+  // ---- Game over art: same pixel "GAME OVER" and restart button as the dino game ----
+  const OVER_PX = 2;
+  const GLYPHS = {
+    G: ['.###.', '#...#', '#....', '#.###', '#...#', '#...#', '.###.'],
+    A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+    M: ['#...#', '##.##', '#.#.#', '#.#.#', '#...#', '#...#', '#...#'],
+    E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+    O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+    V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+    R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#']
+  };
+  const RESTART_ICON = ['....#...', '.#####..', '.#..#...', '.#....#.', '.#....#.', '.######.'];
+  function bitmap(g, rows, ox, oy, color) {
+    g.fillStyle(color, 1);
+    rows.forEach((row, y) => {
+      for (let x = 0; x < row.length; x++) if (row[x] === '#') g.fillRect((ox + x) * OVER_PX, (oy + y) * OVER_PX, OVER_PX, OVER_PX);
+    });
+  }
+  function makeGameOverTextures(sc) {
+    if (sc.textures.exists('gameover-text')) return;
+    const g = sc.make.graphics({ add: false });
+    let x = 0;
+    for (const ch of 'GAME OVER') {
+      if (ch === ' ') { x += 5; continue; }
+      bitmap(g, GLYPHS[ch], x, 0, GRAY);
+      x += 8;
+    }
+    g.generateTexture('gameover-text', (x - 3) * OVER_PX, 7 * OVER_PX);
+    g.destroy();
+    const BW = 12, BH = 10, b = sc.make.graphics({ add: false });
+    b.fillStyle(GRAY, 1);
+    b.fillRect(OVER_PX, 0, (BW - 2) * OVER_PX, BH * OVER_PX);
+    b.fillRect(0, OVER_PX, BW * OVER_PX, (BH - 2) * OVER_PX);
+    bitmap(b, RESTART_ICON, (BW - 8) / 2, 2, 0xffffff);
+    b.generateTexture('restart-btn', BW * OVER_PX, BH * OVER_PX);
+    b.destroy();
   }
 
   // ---- Scene ----
@@ -351,8 +387,10 @@ export function createGame(Phaser, container, options = {}) {
     const style = { fontFamily: FONT, fontSize: '16px', color: GRAY_CSS };
     hudText = this.add.text(0, 12, '', { ...style, backgroundColor: '#ffffff', padding: { x: 4, y: 2 } })
       .setScrollFactor(0).setOrigin(1, 0).setDepth(10);
-    overText = this.add.text(0, 0, '', { ...style, fontSize: '20px', align: 'center', backgroundColor: '#ffffff', padding: { x: 8, y: 6 } })
-      .setScrollFactor(0).setOrigin(0.5).setDepth(10);
+    makeGameOverTextures(this);
+    overText = this.add.image(0, 0, 'gameover-text').setScrollFactor(0).setDepth(10).setVisible(false);
+    overBtn = this.add.image(0, 0, 'restart-btn').setScrollFactor(0).setDepth(10).setVisible(false)
+      .setInteractive({ useHandCursor: true });
     layoutHud();
     newGame();
   }
@@ -360,6 +398,7 @@ export function createGame(Phaser, container, options = {}) {
   function layoutHud() {
     hudText.setX(WIDTH - 12);
     overText.setPosition(WIDTH / 2, HEIGHT * 0.3);
+    overBtn.setPosition(WIDTH / 2, HEIGHT * 0.3 + 32);
   }
 
   function update(time, deltaMs) {
@@ -379,12 +418,9 @@ export function createGame(Phaser, container, options = {}) {
       if (spawnTimer <= 0) { spawnTimer = lerp(SPAWN_MS, d); spawnWarning(); }
       warnings = warnings.filter((w) => {
         w.t -= deltaMs;
-        w.text.setVisible(Math.floor(w.t / 120) % 2 === 0);
         if (w.t > 0) return true;
-        w.text.destroy();
-        const cell = Phaser.Math.Between(ROCK_CELL[0], Math.round(lerp(ROCK_CELL, d)));
-        const size = 8 * cell;
-        rocks.push({ x: colX(w.col) - size / 2, y: camY - size, size, cell, speed: lerp(ROCK_SPEED, d) });
+        const size = 8 * w.cell;   // drops from where it was flashing, at the top of the view
+        rocks.push({ x: Math.round(colX(w.col) - size / 2), y: Math.round(camY) + WARN_TOP, size, cell: w.cell, speed: lerp(ROCK_SPEED, d) });
         return false;
       });
     }
@@ -440,10 +476,10 @@ export function createGame(Phaser, container, options = {}) {
     return runs;
   }
 
-  function drawGrid(grid, x, y, cell = CELL, alpha = 1) {
-    x = snap(x); y = snap(y);
+  function drawGrid(grid, x, y, cell = CELL, alpha = 1, ink = GRAY, exact = false) {
+    if (!exact) { x = snap(x); y = snap(y); }
     runsOf(grid).forEach((r) => {
-      gfx.fillStyle(r.ch === 'w' ? 0xffffff : GRAY, alpha);
+      gfx.fillStyle(r.ch === 'w' ? 0xffffff : r.ch === 's' ? SHIRT : r.ch === 'p' ? PANTS : ink, alpha);
       gfx.fillRect(x + r.x * cell, y + r.y * cell, r.w * cell, cell);
     });
   }
@@ -464,7 +500,7 @@ export function createGame(Phaser, container, options = {}) {
     if (fall) grid = BODY.fall[0];
     else if (phase === 'ready') grid = pose.grid;
     else if (moving) grid = BODY.reach[lastMoved];
-    else grid = BODY.hang[Math.floor(time / 500) % 2];
+    else grid = BODY.hang[0];
 
     // Where each hand is drawn: on its hold, or off it for some poses / when falling
     const [lk, rk] = hands[0].x <= hands[1].x ? [0, 1] : [1, 0];
@@ -508,7 +544,13 @@ export function createGame(Phaser, container, options = {}) {
     drawClimber(time);
 
     // Falling rocks
-    rocks.forEach((rk) => drawGrid(ROCK, rk.x, rk.y, rk.cell));
+    rocks.forEach((rk) => drawGrid(ROCK, Math.round(rk.x), Math.round(rk.y), rk.cell, 1, GRAY, true));
+    // Warning rocks wait at the top of their column, flashing color <-> gray
+    warnings.forEach((w) => {
+      const size = 8 * w.cell;
+      // Pinned to the screen (exact pixels, matching the rounded camera) so it doesn't jitter
+      drawGrid(ROCK, Math.round(colX(w.col) - size / 2), Math.round(camY) + WARN_TOP, w.cell, 1, Math.floor(w.t / 120) % 2 ? ROCK_FLASH : GRAY, true);
+    });
 
     // Chalk puffs
     puffs.forEach((p) => {

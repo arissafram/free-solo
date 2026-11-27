@@ -19,7 +19,7 @@ _Pivot after playtest (branch `endless`): levels → endless again (no crumble),
 2. **Tune** — spacing, gaps, fall speed, crumble speed, difficulty ramp. Constants at top of game.js.
 3. **Hands + reach** — two-hand rule, off-grid holds, slow long reaches.
 4. **Sprites** — text-grid sprites (like dino `tools/`), 2 frames each: hang, reach, fall; start poses, "hi", chalk puffs, burial pile.
-5. **Polish** — screen shake, sound, best score, favicon. Done: shake + WebAudio blips, best level saved, `node tools/make_icons.js` builds favicon/apple-touch icon. Local only, no deploy. Sounds later removed (silent game).
+5. **Polish** — screen shake, sound, best score, favicon. Done: shake + WebAudio blips, best level saved, `node tools/make_icons.js` builds favicon/apple-touch icon. Local only, no deploy. Sounds and screen shake later removed.
 
 ## Ideas to try if holds still feel confusing
 - Mark the holds each arrow would grab (dim ticks).
