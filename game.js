@@ -67,15 +67,17 @@ const snap = (v) => Math.round(v / CELL) * CELL;
 
 // ---- One game in one container ----
 // createGame(Phaser, container, options) fills the container (and follows its size)
-// and returns { destroy }. Options:
+// and returns { destroy, pause, resume }. Options:
 //   keys: 'focus' (default) - arrow keys only while the game has focus (click/tap it);
 //         'window' - arrow keys page-wide, for a page that is only the game.
 //   storageKey: localStorage key for the best height (default 'freesolo-best-m').
+//   active: false - draw the wall once, then sleep until resume() (default true).
 const DEFAULT_HEIGHT = 480;    // px, used when the container has no height of its own
 
 export function createGame(Phaser, container, options = {}) {
   const keyMode = options.keys === 'window' ? 'window' : 'focus';
   const storageKey = options.storageKey || 'freesolo-best-m';
+  let paused = options.active === false;  // paused: loop asleep, keys and taps ignored
 
   // Container setup, undone by destroy()
   // (only the properties we set are put back, so the host's own style changes survive)
@@ -106,6 +108,9 @@ export function createGame(Phaser, container, options = {}) {
     scene: { create, update }
   });
 
+  // Paused: sleep the loop once a frame is drawn (so active: false still shows the wall)
+  game.events.on(Phaser.Core.Events.POST_RENDER, () => { if (paused) game.loop.sleep(); });
+
   let destroyed = false;
   const resizer = new ResizeObserver(() => {
     if (destroyed) return;
@@ -115,6 +120,7 @@ export function createGame(Phaser, container, options = {}) {
     HEIGHT = s.h;
     game.scale.resize(WIDTH, HEIGHT);
     if (scene) layoutHud();
+    if (scene && paused && !game.loop.running) game.step(game.loop.time, 0);  // asleep: redraw the resized canvas once
   });
   resizer.observe(container);
 
@@ -602,6 +608,7 @@ export function createGame(Phaser, container, options = {}) {
   const restartIfOver = () => { if (phase === 'over' && canRestart) newGame(); };
   const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
   on(keyMode === 'window' ? window : container, 'keydown', (e) => {
+    if (paused || !scene) return;
     if (KEYS[e.key]) {
       e.preventDefault();
       if (phase === 'over') restartIfOver(); else tryMove(KEYS[e.key]);
@@ -627,7 +634,7 @@ export function createGame(Phaser, container, options = {}) {
   // Taps on a hold climb to it; taps elsewhere restart after a game over.
   let tap = null;
   on(container, 'pointerdown', (e) => {
-    if (!e.isPrimary) return;
+    if (paused || !scene || !e.isPrimary) return;
     if (keyMode === 'focus') container.focus({ preventScroll: true });
     tap = { x: e.clientX, y: e.clientY };
   });
@@ -637,6 +644,7 @@ export function createGame(Phaser, container, options = {}) {
   on(container, 'pointerup', (e) => {
     if (!tap || !e.isPrimary) return;
     tap = null;
+    if (paused) return;
     if (onResetBtn(e)) { newGame(); return; }
     if (phase === 'over') { restartIfOver(); return; }
     const r = scene.game.canvas.getBoundingClientRect(), cam = scene.cameras.main;
@@ -644,6 +652,23 @@ export function createGame(Phaser, container, options = {}) {
             cam.scrollY + (e.clientY - r.top) * (HEIGHT / r.height));
   });
   on(container, 'pointercancel', () => { tap = null; });
+
+  // pause() freezes everything (tweens and timers run on the loop) until resume().
+  // Before the game has started, only the flag changes; the first frame applies it.
+  function pause() {
+    if (destroyed || paused) return;
+    paused = true;
+    tap = null;
+    game.loop.sleep();
+  }
+
+  function resume() {
+    if (destroyed || !paused) return;
+    paused = false;
+    if (!game.isRunning) return;   // not started yet: it starts awake
+    game.loop.resetDelta();  // the paused time isn't one long frame
+    game.loop.wake();
+  }
 
   function destroy() {
     if (destroyed) return;
@@ -656,5 +681,5 @@ export function createGame(Phaser, container, options = {}) {
     if (addedTabIndex) container.removeAttribute('tabindex');
   }
 
-  return { destroy };
+  return { destroy, pause, resume };
 }

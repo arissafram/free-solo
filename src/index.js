@@ -2,7 +2,7 @@
 import Phaser from './phaser.js';
 import { createGame } from '../game.js';
 
-/** Runs Free Solo inside `el`, at el's size. Returns { destroy }. */
+/** Runs Free Solo inside `el`, at el's size. Returns { destroy, pause, resume }. */
 export function mount(el, options) {
   if (!el || typeof el.appendChild !== 'function') throw new TypeError('free-solo: mount(el) needs a DOM element');
   return createGame(Phaser, el, options);
