@@ -48,7 +48,6 @@ const AIM_CHANCE = [0.3, 0.7, 0.85]; // chance a rock targets the climber's colu
 // Juice
 const SHAKE_MS = 300;          // screen shake when a rock hits...
 const SHAKE_AMT = 0.02;        // ...this strong (fraction of the board)
-const VOLUME = 0.15;           // master volume for the chiptune sound effects
 
 const GRAY = 0x535353;
 const GRAY_CSS = '#535353';
@@ -112,36 +111,6 @@ function saveBest() {
   try { localStorage.setItem('freesolo-best-m', String(best)); } catch (e) {}
   return true;
 }
-
-// ---- Sound: tiny square-wave blips through WebAudio, no files ----
-let audio = null;
-function unlockAudio() {
-  try {
-    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
-    if (audio.state === 'suspended') audio.resume();
-  } catch (e) { audio = null; }
-}
-// notes: [[freqStart, freqEnd, startSec, durSec], ...]
-function blip(notes, type = 'square', vol = 1) {
-  if (!audio || audio.state !== 'running') return;
-  const t0 = audio.currentTime;
-  notes.forEach(([f0, f1, at, dur]) => {
-    const o = audio.createOscillator(), g = audio.createGain();
-    o.type = type;
-    o.frequency.setValueAtTime(f0, t0 + at);
-    o.frequency.exponentialRampToValueAtTime(f1, t0 + at + dur);
-    g.gain.setValueAtTime(VOLUME * vol, t0 + at);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
-    o.connect(g).connect(audio.destination);
-    o.start(t0 + at);
-    o.stop(t0 + at + dur + 0.02);
-  });
-}
-const SFX = {
-  grab: () => blip([[880, 660, 0, 0.05]], 'square', 0.6),
-  warn: () => blip([[1320, 1320, 0, 0.05], [1320, 1320, 0.1, 0.05]], 'square', 0.5),
-  hit: () => blip([[400, 60, 0, 0.35], [180, 40, 0, 0.3]], 'sawtooth', 1)
-};
 
 const WALL_W = COLS * COL_W;
 const difficulty = () => {
@@ -265,8 +234,6 @@ function tryMove(dir) {
     onComplete: () => {
       moving = false;
       if (phase !== 'climbing') return;
-      addPuff(h.x, h.y - 6);
-      SFX.grab();
       height = Math.max(height, h.r);
       if (queued) { const q = queued; queued = null; tryMove(q); }
     }
@@ -327,7 +294,6 @@ function spawnWarning() {
   const text = scene.add.text(colX(col), 6, '!', { fontFamily: FONT, fontSize: '22px', color: GRAY_CSS, fontStyle: 'bold' })
     .setOrigin(0.5, 0).setScrollFactor(1, 0).setDepth(10);
   warnings.push({ col, t: lerp(WARN_MS, d), text });
-  SFX.warn();
 }
 
 function knockOff() {
@@ -338,7 +304,6 @@ function knockOff() {
   warnings.forEach((w) => w.text.destroy());
   warnings = [];
   scene.cameras.main.shake(SHAKE_MS, SHAKE_AMT);
-  SFX.hit();
   const b = bodyFrame();
   fall = { x: handPos.x, shoulderY: b.top + 8 * CELL, vy: -120 };
 }
@@ -496,17 +461,6 @@ function drawClimber(time) {
   drawGrid(grid, f.left, f.top);
   drawGrid(HAND, lh.x - 4, lh.y - 6);
   drawGrid(HAND, rh.x - 4, rh.y - 6);
-
-  // "hi" speech bubble on the start pose
-  if (phase === 'ready') {
-    const bx = snap(f.left + 16 * CELL + 2), by = snap(f.top - 14);
-    gfx.fillStyle(GRAY, 1);
-    gfx.fillRect(bx, by, 18, 16);
-    gfx.fillRect(bx - 2, by + 14, 4, 4);
-    gfx.fillStyle(0xffffff, 1);
-    gfx.fillRect(bx + 2, by + 2, 14, 12);
-    drawGrid(HI, bx + 4, by + 3);
-  }
 }
 
 function draw(time) {
@@ -545,7 +499,6 @@ function draw(time) {
 const restartIfOver = () => { if (phase === 'over' && canRestart) newGame(); };
 const KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 window.addEventListener('keydown', (e) => {
-  unlockAudio();
   if (KEYS[e.key]) {
     e.preventDefault();
     if (phase === 'over') restartIfOver(); else tryMove(KEYS[e.key]);
@@ -557,7 +510,6 @@ window.addEventListener('keydown', (e) => {
 
 let swipeStart = null;
 window.addEventListener('pointerdown', (e) => {
-  unlockAudio();
   if (!e.isPrimary) return;
   swipeStart = { x: e.clientX, y: e.clientY, used: false };
 });
@@ -576,5 +528,4 @@ window.addEventListener('pointerup', () => {
 });
 window.addEventListener('pointercancel', () => { swipeStart = null; });
 // Belt and braces for iOS: no page scroll / pull-to-refresh while swiping
-window.addEventListener('touchend', unlockAudio);
 document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });

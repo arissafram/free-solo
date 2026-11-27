@@ -1,5 +1,5 @@
 # Local dev server that never lets the browser cache files.
-#   python3 tools/serve.py   ->  http://localhost:8766
+#   python3 tools/serve.py   ->  http://localhost:8767
 import http.server, os
 
 os.chdir(os.path.join(os.path.dirname(__file__), '..'))
@@ -9,4 +9,4 @@ class NoCache(http.server.SimpleHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         super().end_headers()
 
-http.server.ThreadingHTTPServer(('127.0.0.1', 8766), NoCache).serve_forever()
+http.server.ThreadingHTTPServer(('127.0.0.1', 8767), NoCache).serve_forever()
