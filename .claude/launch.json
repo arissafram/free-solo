@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "free-solo", "runtimeExecutable": "python3", "runtimeArgs": ["tools/serve.py"], "port": 8766 }
+    { "name": "free-solo", "runtimeExecutable": "python3", "runtimeArgs": ["tools/serve.py"], "port": 8767 }
   ]
 }

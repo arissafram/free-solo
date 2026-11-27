@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Free Solo embed demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 760px; margin: 32px auto; padding: 0 16px; color: #222; line-height: 1.5; }
+    code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+    .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+    free-solo { width: 320px; height: 480px; border: 1px solid #ccc; }
+    #box { width: 360px; height: 420px; border: 1px solid #ccc; }
+  </style>
+  <!-- Run `npm run build` first. From a CDN this would be https://unpkg.com/free-solo -->
+  <script type="module" src="./dist/free-solo.js"></script>
+</head>
+<body>
+  <h1>Free Solo embed demo</h1>
+  <p>This page is long, so you can check that it still scrolls. Click a game to give it the arrow keys, or tap a hold on it.</p>
+
+  <div class="row">
+    <section>
+      <h2>Custom element</h2>
+      <p><code>&lt;free-solo&gt;&lt;/free-solo&gt;</code></p>
+      <free-solo></free-solo>
+    </section>
+
+    <section>
+      <h2><code>mount(el)</code></h2>
+      <p><button id="toggle">Unmount</button> <button id="grow">Resize</button></p>
+      <div id="box"></div>
+    </section>
+  </div>
+
+  <p style="height: 60vh">More page below the games…</p>
+
+  <script type="module">
+    import { mount } from './dist/free-solo.js';
+
+    const box = document.getElementById('box');
+    let game = mount(box);
+
+    document.getElementById('toggle').onclick = (e) => {
+      if (game) { game.destroy(); game = null; e.target.textContent = 'Mount'; }
+      else { game = mount(box); e.target.textContent = 'Unmount'; }
+    };
+    document.getElementById('grow').onclick = () => {
+      box.style.width = box.style.width === '480px' ? '360px' : '480px';
+    };
+  </script>
+</body>
+</html>

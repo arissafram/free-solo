@@ -1,0 +1,38 @@
+{
+  "name": "free-solo",
+  "version": "0.1.0",
+  "description": "Free Solo: a tiny endless climbing game you can drop into any page as <free-solo></free-solo> or mount(el).",
+  "type": "module",
+  "main": "./dist/free-solo.js",
+  "module": "./dist/free-solo.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/free-solo.js",
+      "default": "./dist/free-solo.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "types"
+  ],
+  "sideEffects": true,
+  "keywords": ["game", "web-component", "custom-element", "phaser", "climbing", "embed"],
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arissafram/free-solo.git"
+  },
+  "homepage": "https://github.com/arissafram/free-solo#readme",
+  "bugs": "https://github.com/arissafram/free-solo/issues",
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --minify --target=es2019 --outfile=dist/free-solo.js --log-override:duplicate-object-key=silent --banner:js=\"/*! Free Solo. Bundles Phaser 3.80.1 (MIT License, (c) Richard Davey, Photon Storm Ltd.) */\"",
+    "watch": "npm run build -- --watch",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2"
+  }
+}

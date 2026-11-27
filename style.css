@@ -5,10 +5,9 @@
 }
 
 html, body {
-  /* Swipes are moves, so the page itself never scrolls, zooms or pulls to refresh */
+  /* The game fills the page, so there's nothing to scroll; no pull to refresh either */
   overflow: hidden;
   overscroll-behavior: none;
-  touch-action: none;
 }
 
 body {
@@ -29,7 +28,6 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  padding-top: 16px;
 }
 
 .frame {
@@ -37,9 +35,11 @@ body {
 }
 
 #game-container {
-  /* Width shrinks on small screens; height is set by game.js to fit the window */
-  width: min(480px, calc(100vw - 32px));
-  height: 640px;
+  /* Fills the window; the game follows this box's size */
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 360px;
 }
 
 #game-container canvas {
