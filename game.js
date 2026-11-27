@@ -8,7 +8,8 @@
 import { CELL, POSES, BODY, HAND, HOLD, ROCK, PUFF } from './sprites.js';
 
 // ---- Input (not gameplay) ----
-const SWIPE_PX = 24;           // finger travel that counts as a swipe
+const TAP_SLOP = 12;           // px a finger may drift and still count as a tap (more is a page scroll)
+const TAP_REACH = 26;          // px from a hold's centre that a tap still picks it
 
 // ---- Gameplay tuning: every gameplay number lives here ----
 // Ranged knobs are [start, at RAMP_MS, limit]. Difficulty d goes 0 -> 1 over RAMP_MS
@@ -78,7 +79,7 @@ export function createGame(Phaser, container, options = {}) {
 
   // Container setup, undone by destroy()
   // (only the properties we set are put back, so the host's own style changes survive)
-  const ownStyle = { overflow: 'hidden', touchAction: 'none', outline: 'none', lineHeight: '0', userSelect: 'none', webkitUserSelect: 'none' };
+  const ownStyle = { overflow: 'hidden', touchAction: 'manipulation', outline: 'none', lineHeight: '0', userSelect: 'none', webkitUserSelect: 'none' };
   if (container.clientHeight === 0) ownStyle.height = DEFAULT_HEIGHT + 'px';
   const prevStyle = {};
   for (const k in ownStyle) prevStyle[k] = container.style[k];  // read all first: some are aliases
@@ -200,7 +201,7 @@ export function createGame(Phaser, container, options = {}) {
   }
 
   // ---- Moving ----
-  // Swipes move one hand to the next hold in that direction: up moves the lower hand,
+  // Arrow keys move one hand to the next hold in that direction: up moves the lower hand,
   // down the higher one, left the leftmost, right the rightmost (ties: the hand that
   // didn't move last). If that hand has nowhere to go, the other hand tries.
   // The moving hand must land within MAX_SPAN of the other hand (or on its hold).
@@ -245,6 +246,10 @@ export function createGame(Phaser, container, options = {}) {
     let next = findTarget(k, dir);
     if (!next) { k = 1 - k; next = findTarget(k, dir); }
     if (!next) return;
+    reachTo(k, next);
+  }
+
+  function reachTo(k, next) {
     const h = hands[k];
     const to = holdXY(next.r, next.i);
     moving = true;
@@ -263,6 +268,32 @@ export function createGame(Phaser, container, options = {}) {
         if (queued) { const q = queued; queued = null; tryMove(q); }
       }
     });
+  }
+
+  // Tapping a hold moves a hand there: the hand an arrow toward it would move,
+  // or the other hand if that one can't reach.
+  function tapHold(wx, wy) {
+    if (phase !== 'ready' && phase !== 'climbing') return;
+    let best = null, bestD = TAP_REACH;
+    rows.forEach((row, r) => row.forEach((_, i) => {
+      const p = holdXY(r, i), d = Math.hypot(p.x - wx, p.y - wy);
+      if (d < bestD) { bestD = d; best = { r, i, p }; }
+    }));
+    if (!best) return;
+    const dx = best.p.x - handPos.x, dy = best.p.y - handPos.y;
+    const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    const first = pickHand(dir);
+    const reaches = (k) => {
+      const h = hands[k], o = hands[1 - k];
+      if (h.r === best.r && h.i === best.i) return false;
+      if (o.r === best.r && o.i === best.i) return true;
+      const a = holdXY(o.r, o.i);
+      return Phaser.Math.Distance.Between(best.p.x, best.p.y, a.x, a.y) <= MAX_SPAN;
+    };
+    const k = reaches(first) ? first : reaches(1 - first) ? 1 - first : -1;
+    if (k < 0 || moving) return;
+    if (phase === 'ready') phase = 'climbing';
+    reachTo(k, best);
   }
 
   function updateHandPos() {
@@ -562,7 +593,7 @@ export function createGame(Phaser, container, options = {}) {
     });
   }
 
-  // ---- Input: arrows, swipes, taps ----
+  // ---- Input: arrows and taps ----
   const offs = [];
   const on = (target, type, fn, opts) => {
     target.addEventListener(type, fn, opts);
@@ -592,30 +623,27 @@ export function createGame(Phaser, container, options = {}) {
     const slop = 8;  // a little extra so it's easy to hit with a finger
     return x <= RESET_PAD + resetBtn.width + slop && y <= RESET_PAD + resetBtn.height + slop;
   };
-  let swipeStart = null;
+  // Pointer input is taps only, so a finger dragging across the game scrolls the page.
+  // Taps on a hold climb to it; taps elsewhere restart after a game over.
+  let tap = null;
   on(container, 'pointerdown', (e) => {
     if (!e.isPrimary) return;
     if (keyMode === 'focus') container.focus({ preventScroll: true });
-    try { container.setPointerCapture(e.pointerId); } catch (err) {}  // keep the swipe if the finger leaves the box
-    swipeStart = { x: e.clientX, y: e.clientY, used: false, reset: onResetBtn(e) };
+    tap = { x: e.clientX, y: e.clientY };
   });
   on(container, 'pointermove', (e) => {
-    if (!swipeStart || swipeStart.used || !e.isPrimary) return;
-    const dx = e.clientX - swipeStart.x, dy = e.clientY - swipeStart.y;
-    if (Math.hypot(dx, dy) < SWIPE_PX) return;
-    swipeStart.used = true;  // one move per swipe
-    tryMove(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+    if (tap && e.isPrimary && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) > TAP_SLOP) tap = null;
   });
-  on(container, 'pointerup', () => {
-    if (!swipeStart) return;
-    const wasTap = !swipeStart.used, reset = swipeStart.reset;
-    swipeStart = null;
-    if (wasTap && reset) newGame();
-    else if (wasTap) restartIfOver();
+  on(container, 'pointerup', (e) => {
+    if (!tap || !e.isPrimary) return;
+    tap = null;
+    if (onResetBtn(e)) { newGame(); return; }
+    if (phase === 'over') { restartIfOver(); return; }
+    const r = scene.game.canvas.getBoundingClientRect(), cam = scene.cameras.main;
+    tapHold(cam.scrollX + (e.clientX - r.left) * (WIDTH / r.width),
+            cam.scrollY + (e.clientY - r.top) * (HEIGHT / r.height));
   });
-  on(container, 'pointercancel', () => { swipeStart = null; });
-  // Belt and braces for iOS: no page scroll / pull-to-refresh while swiping on the game
-  on(container, 'touchmove', (e) => e.preventDefault(), { passive: false });
+  on(container, 'pointercancel', () => { tap = null; });
 
   function destroy() {
     if (destroyed) return;

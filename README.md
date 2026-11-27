@@ -1,6 +1,6 @@
 # Free Solo
 
-A tiny endless climbing game: no rope, two hands, falling rocks. Arrow keys or swipes move a hand. A rock hit means game over. The button in the top left, or the R key, starts over at any time. Your best height is saved in `localStorage`.
+A tiny endless climbing game: no rope, two hands, falling rocks. Arrow keys move a hand, or tap a hold to reach for it; swiping on the game scrolls the page. A rock hit means game over. The button in the top left, or the R key, starts over at any time. Your best height is saved in `localStorage`.
 
 You can drop it into any page as a custom element or mount it into an element you already have. It fills whatever box you give it and follows that box's size.
 

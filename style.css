@@ -5,10 +5,9 @@
 }
 
 html, body {
-  /* Swipes are moves, so the page itself never scrolls, zooms or pulls to refresh */
+  /* The game fills the page, so there's nothing to scroll; no pull to refresh either */
   overflow: hidden;
   overscroll-behavior: none;
-  touch-action: none;
 }
 
 body {
